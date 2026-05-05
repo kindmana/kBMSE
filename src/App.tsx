@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
-import { FolderOpen, Save, MousePointer2, Pencil, Eraser, Settings2, FileCode2 } from 'lucide-react';
+import { FolderOpen, Save, MousePointer2, Pencil, Eraser, Settings2, FileCode2, ZoomIn } from 'lucide-react';
 import { useEditorStore } from './store/editorStore';
-import { parseBms } from './parser/bmsParser';
+import { parseBms, encodeBmsValue, BmsData } from './parser/bmsParser';
 import './App.css';
 
 // Lane Layout Configuration
@@ -11,50 +11,51 @@ interface LaneConfig {
   channel?: number;
   width: number;
   color: string;
+  isGroupEnd?: boolean;
 }
+
+const DEFAULT_LANE_WIDTH = 25; // Uniform width for all lanes
 
 const LAYOUT: LaneConfig[] = [
   // 1. Measure
-  { name: 'MSR', type: 'measure', width: 40, color: '#050505' },
+  { name: 'MSR', type: 'measure', width: DEFAULT_LANE_WIDTH, color: '#050505', isGroupEnd: true },
   // 2. Timing
-  { name: 'BPM', type: 'channel', channel: 0x08, width: 25, color: '#0a0a0a' },
-  { name: 'STOP', type: 'channel', channel: 0x09, width: 25, color: '#0a0a0a' },
-  { name: 'SC', type: 'channel', channel: 0x02, width: 25, color: '#0a0a0a' }, // SCROLL
+  { name: 'BPM', type: 'channel', channel: 0x08, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
+  { name: 'STOP', type: 'channel', channel: 0x09, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
+  { name: 'SCR', type: 'channel', channel: 0x02, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a', isGroupEnd: true }, // SCROLL
   // 3. Video
-  { name: 'BGA', type: 'channel', channel: 0x04, width: 30, color: '#080808' },
-  { name: 'LYR', type: 'channel', channel: 0x06, width: 30, color: '#080808' },
-  { name: 'POR', type: 'channel', channel: 0x0A, width: 30, color: '#080808' },
+  { name: 'BGA', type: 'channel', channel: 0x04, width: DEFAULT_LANE_WIDTH, color: '#080808' },
+  { name: 'LYR', type: 'channel', channel: 0x06, width: DEFAULT_LANE_WIDTH, color: '#080808' },
+  { name: 'POR', type: 'channel', channel: 0x0A, width: DEFAULT_LANE_WIDTH, color: '#080808', isGroupEnd: true },
   // 4. 1P Notes (11-19)
-  { name: 'S1', type: 'channel', channel: 0x16, width: 30, color: '#140c0c' }, // Dark red tint
-  { name: '1', type: 'channel', channel: 0x11, width: 20, color: '#0a0a0a' },
-  { name: '2', type: 'channel', channel: 0x12, width: 20, color: '#111114' }, // Blueish dark
-  { name: '3', type: 'channel', channel: 0x13, width: 20, color: '#0a0a0a' },
-  { name: '4', type: 'channel', channel: 0x14, width: 20, color: '#111114' },
-  { name: '5', type: 'channel', channel: 0x15, width: 20, color: '#0a0a0a' },
-  { name: '6', type: 'channel', channel: 0x18, width: 20, color: '#111114' },
-  { name: '7', type: 'channel', channel: 0x19, width: 20, color: '#0a0a0a' },
+  { name: 'S1', type: 'channel', channel: 0x16, width: DEFAULT_LANE_WIDTH, color: '#140c0c' },
+  { name: 'A1', type: 'channel', channel: 0x11, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
+  { name: 'A2', type: 'channel', channel: 0x12, width: DEFAULT_LANE_WIDTH, color: '#111114' },
+  { name: 'A3', type: 'channel', channel: 0x13, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
+  { name: 'A4', type: 'channel', channel: 0x14, width: DEFAULT_LANE_WIDTH, color: '#111114' },
+  { name: 'A5', type: 'channel', channel: 0x15, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
+  { name: 'A6', type: 'channel', channel: 0x18, width: DEFAULT_LANE_WIDTH, color: '#111114' },
+  { name: 'A7', type: 'channel', channel: 0x19, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a', isGroupEnd: true },
   // 5. 2P Notes (21-29)
-  { name: 'S2', type: 'channel', channel: 0x26, width: 30, color: '#140c0c' },
-  { name: '1', type: 'channel', channel: 0x21, width: 20, color: '#0a0a0a' },
-  { name: '2', type: 'channel', channel: 0x22, width: 20, color: '#111114' },
-  { name: '3', type: 'channel', channel: 0x23, width: 20, color: '#0a0a0a' },
-  { name: '4', type: 'channel', channel: 0x24, width: 20, color: '#111114' },
-  { name: '5', type: 'channel', channel: 0x25, width: 20, color: '#0a0a0a' },
-  { name: '6', type: 'channel', channel: 0x28, width: 20, color: '#111114' },
-  { name: '7', type: 'channel', channel: 0x29, width: 20, color: '#0a0a0a' },
-  // 6. BGM (Generic 8 lanes)
-  { name: 'BGM1', type: 'bgm', channel: 0x01, width: 30, color: '#0a0a0a' },
-  { name: 'BGM2', type: 'bgm', channel: 0x01, width: 30, color: '#0f0f0f' },
-  { name: 'BGM3', type: 'bgm', channel: 0x01, width: 30, color: '#0a0a0a' },
-  { name: 'BGM4', type: 'bgm', channel: 0x01, width: 30, color: '#0f0f0f' },
-  { name: 'BGM5', type: 'bgm', channel: 0x01, width: 30, color: '#0a0a0a' },
-  { name: 'BGM6', type: 'bgm', channel: 0x01, width: 30, color: '#0f0f0f' },
-  { name: 'BGM7', type: 'bgm', channel: 0x01, width: 30, color: '#0a0a0a' },
-  { name: 'BGM8', type: 'bgm', channel: 0x01, width: 30, color: '#0f0f0f' },
+  { name: 'S2', type: 'channel', channel: 0x26, width: DEFAULT_LANE_WIDTH, color: '#140c0c' },
+  { name: 'D1', type: 'channel', channel: 0x21, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
+  { name: 'D2', type: 'channel', channel: 0x22, width: DEFAULT_LANE_WIDTH, color: '#111114' },
+  { name: 'D3', type: 'channel', channel: 0x23, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
+  { name: 'D4', type: 'channel', channel: 0x24, width: DEFAULT_LANE_WIDTH, color: '#111114' },
+  { name: 'D5', type: 'channel', channel: 0x25, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
+  { name: 'D6', type: 'channel', channel: 0x28, width: DEFAULT_LANE_WIDTH, color: '#111114' },
+  { name: 'D7', type: 'channel', channel: 0x29, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a', isGroupEnd: true },
+  // 6. BGM (Generic 32 lanes)
+  ...Array.from({ length: 32 }).map((_, i) => ({
+    name: `B${i + 1}`,
+    type: 'bgm' as const,
+    channel: 0x01,
+    width: DEFAULT_LANE_WIDTH,
+    color: i % 2 === 0 ? '#0a0a0a' : '#0f0f0f'
+  }))
 ];
 
-// 1 Measure = 192 pixels in height
-const MEASURE_HEIGHT = 192; 
+const BASE_MEASURE_HEIGHT = 192; 
 
 function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -66,169 +67,276 @@ function App() {
     useBase62, setUseBase62, 
     bmsData, setBmsData, 
     rawBmsContent, setRawBmsContent,
+    zoomX, setZoomX,
+    zoomY, setZoomY,
     setFileName 
   } = useEditorStore();
 
-  // Scroll state (using refs for performance during rendering)
+  // Scroll state
   const scrollY = useRef(0);
   const scrollX = useRef(0);
+  const maxScrollYRef = useRef(0);
+  const maxScrollXRef = useRef(0);
   const renderRequested = useRef(false);
 
+  // Scrollbar Drag State
+  const vThumbRect = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  const hThumbRect = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  const isDraggingV = useRef(false);
+  const isDraggingH = useRef(false);
+  const dragStartY = useRef(0);
+  const dragStartX = useRef(0);
+  const initialScrollY = useRef(0);
+  const initialScrollX = useRef(0);
+
+  // References to state to avoid stale closures in requestAnimationFrame
+  const bmsDataRef = useRef<BmsData | null>(null);
+  const useBase62Ref = useRef<boolean>(useBase62);
+  const zoomXRef = useRef<number>(zoomX);
+  const zoomYRef = useRef<number>(zoomY);
+
+  useEffect(() => {
+    bmsDataRef.current = bmsData;
+    useBase62Ref.current = useBase62;
+    zoomXRef.current = zoomX;
+    zoomYRef.current = zoomY;
+    requestRender();
+  }, [bmsData, useBase62, zoomX, zoomY]);
+
   const drawGridAndNotes = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    try {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
 
-    // Fix for high DPI displays (if wanted later, skip for now to keep it simple)
-    // Clear whole canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // Background of container
-    ctx.fillStyle = '#050505';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const currentBmsData = bmsDataRef.current;
+      const currentUseBase62 = useBase62Ref.current;
+      const currentZoomX = zoomXRef.current;
+      const currentZoomY = zoomYRef.current;
+      
+      const currentMeasureHeight = BASE_MEASURE_HEIGHT * currentZoomY;
 
-    ctx.save();
-    
-    // Origin is bottom-left, scrolling moves us up
-    ctx.translate(-scrollX.current, canvas.height + scrollY.current);
+      // Apply zoom to layout widths
+      const zoomedLayout = LAYOUT.map(l => ({ ...l, width: l.width * currentZoomX }));
 
-    // Calculate visible Y bounds to prevent drawing massive rectangles
-    const topY = -(canvas.height + scrollY.current);
-    const bottomY = -scrollY.current;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Container Background
+      ctx.fillStyle = '#050505';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    let currentX = 50; // Starting padding
+      ctx.save();
+      
+      // Setup coordinates: bottom-left is origin, Y goes UP
+      const originY = canvas.height + scrollY.current;
+      ctx.translate(-scrollX.current, originY);
 
-    // 1. Draw Lane Backgrounds & Borders
-    LAYOUT.forEach((lane) => {
-      // Lane background
-      ctx.fillStyle = lane.color;
-      ctx.fillRect(currentX, topY, lane.width, canvas.height);
+      const topY = -originY;
+      const bottomY = canvas.height - originY;
 
-      // Lane Border
-      ctx.strokeStyle = '#222222';
+      let currentX = 50; // Padding
+      const totalWidth = 50 + zoomedLayout.reduce((sum, l) => sum + l.width, 0) + 50;
+
+      // Draw left-most boundary line
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(currentX, topY);
-      ctx.lineTo(currentX, bottomY);
-      ctx.moveTo(currentX + lane.width, topY);
-      ctx.lineTo(currentX + lane.width, bottomY);
+      ctx.moveTo(50, topY);
+      ctx.lineTo(50, bottomY);
+      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
       ctx.stroke();
 
-      currentX += lane.width;
-    });
+      // 1. Draw Lane Backgrounds and right-side borders
+      zoomedLayout.forEach((lane) => {
+        ctx.fillStyle = lane.color;
+        ctx.fillRect(currentX, topY, lane.width, canvas.height);
+        
+        currentX += lane.width;
 
-    // 2. Draw Measure Lines & Numbers
-    const totalMeasures = bmsData ? Math.max(...bmsData.notes.map(n => n.measure), 100) + 1 : 100;
-    
-    ctx.strokeStyle = 'rgba(255,255,255,0.1)'; // subtle horizontal line
-    ctx.fillStyle = 'rgba(255,255,255,0.4)';
-    ctx.font = '10px Inter';
-    ctx.textAlign = 'center';
-
-    for (let m = 0; m <= totalMeasures; m++) {
-      const y = -(m * MEASURE_HEIGHT);
-      
-      // Culling for measure lines
-      if (y < topY - MEASURE_HEIGHT || y > bottomY + MEASURE_HEIGHT) continue;
-
-      // Horizontal Line
-      ctx.beginPath();
-      ctx.moveTo(50, y);
-      ctx.lineTo(currentX, y);
-      ctx.stroke();
-
-      // Sub-lines (e.g. 4 beats per measure)
-      ctx.strokeStyle = 'rgba(255,255,255,0.03)';
-      for (let beat = 1; beat < 4; beat++) {
-        const beatY = y - (MEASURE_HEIGHT / 4) * beat;
         ctx.beginPath();
-        ctx.moveTo(50, beatY);
-        ctx.lineTo(currentX, beatY);
+        ctx.moveTo(currentX, topY);
+        ctx.lineTo(currentX, bottomY);
+        ctx.strokeStyle = lane.isGroupEnd ? 'rgba(255,255,255,0.4)' : '#222222';
         ctx.stroke();
-      }
-      ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-
-      // Measure Number
-      const measureLane = LAYOUT.find(l => l.type === 'measure');
-      if (measureLane) {
-        ctx.fillText(m.toString(), 50 + measureLane.width / 2, y - 5);
-      }
-    }
-
-    // 3. Draw Notes
-    if (bmsData) {
-      const bgmGroups: Record<string, number> = {};
-
-      bmsData.notes.forEach(note => {
-        const y = -(note.measure * MEASURE_HEIGHT + note.position * MEASURE_HEIGHT);
-        
-        // Culling: Only draw notes that are visible
-        if (y < topY - 20 || y > bottomY + 20) return;
-
-        let targetLaneIndex = -1;
-        
-        if (note.channel === 0x01) {
-          const key = `${note.measure}_${note.position}`;
-          if (!bgmGroups[key]) bgmGroups[key] = 0;
-          
-          const bgmOffset = bgmGroups[key] % 8;
-          bgmGroups[key]++;
-          targetLaneIndex = LAYOUT.findIndex(l => l.type === 'bgm' && l.name === `BGM${bgmOffset + 1}`);
-        } else {
-          targetLaneIndex = LAYOUT.findIndex(l => l.channel === note.channel);
-        }
-
-        if (targetLaneIndex !== -1) {
-          let laneX = 50;
-          for (let i = 0; i < targetLaneIndex; i++) laneX += LAYOUT[i].width;
-          const lWidth = LAYOUT[targetLaneIndex].width;
-          
-          // Draw Note Body
-          ctx.fillStyle = '#f4f4f5';
-          ctx.fillRect(laneX + 1, y - 3, lWidth - 2, 6);
-          
-          // Note Border
-          ctx.strokeStyle = '#000000';
-          ctx.strokeRect(laneX + 1, y - 3, lWidth - 2, 6);
-          
-          // Draw Value
-          ctx.fillStyle = '#000000';
-          ctx.font = '7px Inter';
-          ctx.textAlign = 'center';
-          ctx.fillText(note.value.toString(useBase62 ? 62 : 36).toUpperCase(), laneX + lWidth / 2, y + 2);
-        }
       });
+
+      // 2. Draw Measure Lines
+      const maxMeasure = currentBmsData && currentBmsData.notes.length > 0
+        ? currentBmsData.notes.reduce((max, note) => Math.max(max, note.measure), 0)
+        : 100;
+      const totalMeasures = Math.max(maxMeasure, 100) + 1;
+      const totalHeight = totalMeasures * currentMeasureHeight + 100;
+
+      // Update scroll bounds
+      maxScrollXRef.current = Math.max(0, totalWidth - canvas.width);
+      maxScrollYRef.current = Math.max(0, totalHeight - canvas.height);
+      
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.font = '10px Inter';
+      ctx.textAlign = 'center';
+
+      for (let m = 0; m <= totalMeasures; m++) {
+        const y = -(m * currentMeasureHeight);
+        
+        if (y < topY - currentMeasureHeight || y > bottomY + currentMeasureHeight) continue;
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)'; // Brighter measure line
+        ctx.beginPath();
+        ctx.moveTo(50, y);
+        ctx.lineTo(currentX, y);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+        for (let beat = 1; beat < 4; beat++) {
+          const beatY = y - (currentMeasureHeight / 4) * beat;
+          ctx.beginPath();
+          ctx.moveTo(50, beatY);
+          ctx.lineTo(currentX, beatY);
+          ctx.stroke();
+        }
+
+        const measureLane = zoomedLayout.find(l => l.type === 'measure');
+        if (measureLane) {
+          ctx.fillText(m.toString(), 50 + measureLane.width / 2, y - 5);
+        }
+      }
+
+      // 3. Draw Notes
+      if (currentBmsData) {
+        currentBmsData.notes.forEach(note => {
+          const y = -(note.measure * currentMeasureHeight + note.position * currentMeasureHeight);
+          
+          if (y < topY - 20 || y > bottomY + 20) return;
+
+          let targetLaneIndex = -1;
+          
+          if (note.channel === 0x01) {
+            // Use the parsed index (occurrence of #xxx01 in the measure) to determine the BGM lane.
+            const bgmOffset = note.index % 32; // Expanded to 32 BGM lanes
+            targetLaneIndex = zoomedLayout.findIndex(l => l.type === 'bgm' && l.name === `B${bgmOffset + 1}`);
+          } else {
+            targetLaneIndex = zoomedLayout.findIndex(l => l.channel === note.channel);
+          }
+
+          if (targetLaneIndex !== -1) {
+            let laneX = 50;
+            for (let i = 0; i < targetLaneIndex; i++) laneX += zoomedLayout[i].width;
+            const lWidth = zoomedLayout[targetLaneIndex].width;
+            
+            // Align UP from the measure line. Y goes UP in canvas logic (negative).
+            const noteHeight = 12; // Increased note height
+            const noteY = y - noteHeight; // Draw upwards from the baseline
+
+            ctx.fillStyle = '#f4f4f5';
+            ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
+            
+            ctx.strokeStyle = '#000000';
+            ctx.strokeRect(laneX + 1, noteY, lWidth - 2, noteHeight);
+            
+            ctx.fillStyle = '#000000';
+            ctx.font = '10px Inter'; // Increased font size
+            ctx.textAlign = 'center';
+            // encodeBmsValue avoids the Javascript RangeError of toString(62)
+            ctx.fillText(encodeBmsValue(note.value, currentUseBase62), laneX + lWidth / 2, noteY + 10); // Adjusted Y for larger text
+          }
+        });
+      }
+
+      // 4. Draw Header Background (Sticky Top)
+      ctx.restore();
+      ctx.save();
+      ctx.translate(-scrollX.current, 0); // Top sticky area
+      
+      ctx.fillStyle = 'rgba(10, 10, 12, 0.9)';
+      ctx.fillRect(scrollX.current, 0, canvas.width + scrollX.current, 24);
+      
+      // Header Bottom Border
+      ctx.strokeStyle = '#333333';
+      ctx.beginPath();
+      ctx.moveTo(scrollX.current, 24);
+      ctx.lineTo(canvas.width + scrollX.current, 24);
+      ctx.stroke();
+
+      let headerX = 50;
+      ctx.fillStyle = '#a1a1aa';
+      ctx.font = '10px Inter';
+      ctx.textAlign = 'center';
+      
+      zoomedLayout.forEach((lane) => {
+        ctx.fillText(lane.name, headerX + lane.width / 2, 16);
+        headerX += lane.width;
+      });
+      
+      // 5. Draw Visual Scrollbars
+      ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset to screen coordinates
+
+      const maxScrollY = maxScrollYRef.current;
+      const maxScrollX = maxScrollXRef.current;
+
+      // Vertical Scrollbar
+      if (maxScrollY > 0) {
+        const scrollbarWidth = 10;
+        const trackHeight = canvas.height - 24; // Below top header
+        const viewRatio = Math.min(1, canvas.height / totalHeight);
+        const thumbHeight = Math.max(30, trackHeight * viewRatio);
+        
+        // In our coordinate system, scrollY = 0 is bottom (measure 0).
+        // Thumb should be at the bottom when scrollY = 0.
+        const scrollRatio = scrollY.current / maxScrollY;
+        const thumbY = 24 + (1 - scrollRatio) * (trackHeight - thumbHeight);
+
+        const rectX = canvas.width - scrollbarWidth + 2;
+        vThumbRect.current = { x: rectX, y: thumbY, w: scrollbarWidth - 4, h: thumbHeight };
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.fillRect(canvas.width - scrollbarWidth, 24, scrollbarWidth, trackHeight);
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+        ctx.beginPath();
+        if (ctx.roundRect) {
+          ctx.roundRect(rectX, thumbY, scrollbarWidth - 4, thumbHeight, 4);
+        } else {
+          ctx.fillRect(rectX, thumbY, scrollbarWidth - 4, thumbHeight);
+        }
+        ctx.fill();
+      } else {
+        vThumbRect.current = { x: 0, y: 0, w: 0, h: 0 };
+      }
+
+      // Horizontal Scrollbar
+      if (maxScrollX > 0) {
+        const scrollbarHeight = 10;
+        const trackWidth = canvas.width - (maxScrollY > 0 ? 10 : 0);
+        const viewRatio = Math.min(1, canvas.width / totalWidth);
+        const thumbWidth = Math.max(30, trackWidth * viewRatio);
+        
+        const scrollRatio = scrollX.current / maxScrollX;
+        const thumbX = scrollRatio * (trackWidth - thumbWidth);
+
+        const rectY = canvas.height - scrollbarHeight + 2;
+        hThumbRect.current = { x: thumbX, y: rectY, w: thumbWidth, h: scrollbarHeight - 4 };
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.fillRect(0, canvas.height - scrollbarHeight, trackWidth, scrollbarHeight);
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+        ctx.beginPath();
+        if (ctx.roundRect) {
+          ctx.roundRect(thumbX, rectY, thumbWidth, scrollbarHeight - 4, 4);
+        } else {
+          ctx.fillRect(thumbX, rectY, thumbWidth, scrollbarHeight - 4);
+        }
+        ctx.fill();
+      } else {
+        hThumbRect.current = { x: 0, y: 0, w: 0, h: 0 };
+      }
+
+      ctx.restore();
+    } catch (e) {
+      console.error("Render Error:", e);
+    } finally {
+      renderRequested.current = false;
     }
-
-    // 4. Draw Lane Headers (Sticky at bottom)
-    ctx.restore();
-    ctx.save();
-    ctx.translate(-scrollX.current, canvas.height - 24); // Bottom sticky area
-    
-    // Header Background
-    ctx.fillStyle = 'rgba(10, 10, 12, 0.9)';
-    ctx.fillRect(scrollX.current, 0, canvas.width + scrollX.current, 24);
-    
-    // Header Top Border
-    ctx.strokeStyle = '#333333';
-    ctx.beginPath();
-    ctx.moveTo(scrollX.current, 0);
-    ctx.lineTo(canvas.width + scrollX.current, 0);
-    ctx.stroke();
-
-    let headerX = 50;
-    ctx.fillStyle = '#a1a1aa';
-    ctx.font = '10px Inter';
-    ctx.textAlign = 'center';
-    
-    LAYOUT.forEach((lane) => {
-      ctx.fillText(lane.name, headerX + lane.width / 2, 16);
-      headerX += lane.width;
-    });
-    
-    ctx.restore();
-    renderRequested.current = false;
   };
 
   const requestRender = () => {
@@ -238,7 +346,6 @@ function App() {
     }
   };
 
-  // Canvas Resize Handler
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
@@ -254,9 +361,8 @@ function App() {
     resizeCanvas();
 
     return () => window.removeEventListener('resize', resizeCanvas);
-  }, [bmsData, useBase62]); 
+  }, []); // Only bind once, state is handled via refs
 
-  // Mouse Wheel Scrolling
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -264,9 +370,9 @@ function App() {
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
       if (e.shiftKey) {
-        scrollX.current = Math.max(0, scrollX.current + e.deltaY);
+        scrollX.current = Math.min(maxScrollXRef.current, Math.max(0, scrollX.current + e.deltaY));
       } else {
-        scrollY.current = Math.max(0, scrollY.current + e.deltaY);
+        scrollY.current = Math.min(maxScrollYRef.current, Math.max(0, scrollY.current + e.deltaY));
       }
       requestRender();
     };
@@ -275,7 +381,81 @@ function App() {
     return () => container.removeEventListener('wheel', handleWheel);
   }, []);
 
-  // File loading
+  // Global mouse drag tracking for scrollbars
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingV.current && !isDraggingH.current) return;
+      
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      if (isDraggingV.current) {
+        const deltaY = e.clientY - dragStartY.current;
+        const trackHeight = canvas.height - 24;
+        const vRect = vThumbRect.current;
+        const draggableRange = trackHeight - vRect.h;
+        
+        if (draggableRange > 0) {
+          // deltaY moves thumb down -> mapped to decreasing scrollY
+          const scrollDelta = -(deltaY / draggableRange) * maxScrollYRef.current;
+          scrollY.current = Math.min(maxScrollYRef.current, Math.max(0, initialScrollY.current + scrollDelta));
+          requestRender();
+        }
+      }
+
+      if (isDraggingH.current) {
+        const deltaX = e.clientX - dragStartX.current;
+        const trackWidth = canvas.width - (maxScrollYRef.current > 0 ? 10 : 0);
+        const hRect = hThumbRect.current;
+        const draggableRange = trackWidth - hRect.w;
+        
+        if (draggableRange > 0) {
+          // deltaX moves thumb right -> mapped to increasing scrollX
+          const scrollDelta = (deltaX / draggableRange) * maxScrollXRef.current;
+          scrollX.current = Math.min(maxScrollXRef.current, Math.max(0, initialScrollX.current + scrollDelta));
+          requestRender();
+        }
+      }
+    };
+
+    const handleMouseUp = () => {
+      isDraggingV.current = false;
+      isDraggingH.current = false;
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
+  // Canvas Mouse Down
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const vRect = vThumbRect.current;
+    if (vRect.w > 0 && x >= vRect.x - 2 && x <= vRect.x + vRect.w + 2 && y >= vRect.y && y <= vRect.y + vRect.h) {
+      isDraggingV.current = true;
+      dragStartY.current = e.clientY;
+      initialScrollY.current = scrollY.current;
+      return;
+    }
+
+    const hRect = hThumbRect.current;
+    if (hRect.w > 0 && x >= hRect.x && x <= hRect.x + hRect.w && y >= hRect.y - 2 && y <= hRect.y + hRect.h + 2) {
+      isDraggingH.current = true;
+      dragStartX.current = e.clientX;
+      initialScrollX.current = scrollX.current;
+      return;
+    }
+  };
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -284,20 +464,25 @@ function App() {
     
     const reader = new FileReader();
     reader.onload = (event) => {
-      const text = event.target?.result as string;
-      setRawBmsContent(text);
-      const parsedData = parseBms(text, useBase62);
-      setBmsData(parsedData);
-      
-      // Reset scroll
-      scrollY.current = 0;
-      scrollX.current = 0;
-      requestRender();
+      try {
+        const text = event.target?.result as string;
+        setRawBmsContent(text);
+        const parsedData = parseBms(text, useBase62Ref.current);
+        
+        scrollY.current = 0;
+        scrollX.current = 0;
+        setBmsData(parsedData); // This will trigger useEffect -> requestRender
+      } catch (err) {
+        console.error("Failed to parse BMS", err);
+      }
     };
-    reader.readAsText(file); 
+    // Default to Shift-JIS encoding for BMS files, as most legacy and Japanese BMS files use it.
+    reader.readAsText(file, 'Shift-JIS'); 
+    
+    // Reset value so the same file can be selected again
+    e.target.value = '';
   };
 
-  // Toggle Mode
   const handleToggleMode = () => {
     const newMode = !useBase62;
     setUseBase62(newMode);
@@ -305,13 +490,11 @@ function App() {
     if (rawBmsContent) {
       const parsedData = parseBms(rawBmsContent, newMode);
       setBmsData(parsedData);
-      requestRender();
     }
   };
 
   return (
     <div className="app-container">
-      {/* Topbar */}
       <header className="topbar">
         <div className="topbar-logo">kBMSE</div>
         <div className="topbar-menu">
@@ -345,9 +528,7 @@ function App() {
         </div>
       </header>
 
-      {/* Main Area */}
       <div className="main-area">
-        {/* Sidebar */}
         <aside className="sidebar">
           <div>
             <div className="panel-title">Actions</div>
@@ -397,13 +578,11 @@ function App() {
           </div>
         </aside>
 
-        {/* Canvas Area */}
         <main className="canvas-container" ref={containerRef}>
-          <canvas ref={canvasRef} />
+          <canvas ref={canvasRef} onMouseDown={handleCanvasMouseDown} />
         </main>
 
-        {/* Right Panel: Header Info */}
-        <aside className="right-panel">
+        <aside className="right-panel" style={{ display: 'flex', flexDirection: 'column' }}>
           <div className="panel-title">Header Info</div>
           
           {bmsData ? (
@@ -446,12 +625,46 @@ function App() {
               </div>
             </div>
           ) : (
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', textAlign: 'center', marginTop: '20px' }}>
+            <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', textAlign: 'center', marginTop: '20px', flex: 1 }}>
               <FileCode2 size={32} style={{ opacity: 0.5, margin: '0 auto 10px' }} />
               <p>No BMS file loaded.</p>
-              <p style={{ fontSize: '0.75rem', marginTop: '5px' }}>Click Open to load a file.</p>
             </div>
           )}
+
+          {/* Zoom Controls */}
+          <div style={{ marginTop: 'auto', paddingTop: '20px', borderTop: '1px solid var(--border-color)' }}>
+            <div className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <ZoomIn size={14} /> Zoom
+            </div>
+            
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                <span>Horizontal (X)</span>
+                <span>{Math.round(zoomX * 100)}%</span>
+              </div>
+              <input 
+                type="range" 
+                min="0.5" max="3" step="0.1" 
+                value={zoomX} 
+                onChange={(e) => setZoomX(parseFloat(e.target.value))}
+                style={{ width: '100%' }}
+              />
+            </div>
+
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                <span>Vertical (Y)</span>
+                <span>{Math.round(zoomY * 100)}%</span>
+              </div>
+              <input 
+                type="range" 
+                min="0.5" max="4" step="0.1" 
+                value={zoomY} 
+                onChange={(e) => setZoomY(parseFloat(e.target.value))}
+                style={{ width: '100%' }}
+              />
+            </div>
+          </div>
         </aside>
       </div>
     </div>

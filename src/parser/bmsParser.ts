@@ -17,6 +17,7 @@ export interface BmsHeader {
 export interface BmsNote {
   measure: number;
   channel: number;
+  index: number;    // The nth occurrence of this channel in this measure
   position: number; // 0.0 to 1.0 (relative position within the measure)
   value: number;    // The decoded integer value of the note
 }
@@ -91,6 +92,8 @@ export function parseBms(bmsContent: string, useBase62: boolean): BmsData {
   const headerRegex = /^#([A-Z0-9]+)\s+(.+)$/i;
   const defRegex = /^#(WAV|BMP)([0-9A-Z]{2})\s+(.+)$/i;
 
+  const measureChannelCount: Record<string, number> = {};
+
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("#")) continue;
@@ -115,6 +118,10 @@ export function parseBms(bmsContent: string, useBase62: boolean): BmsData {
       const channel = parseInt(channelMatch[2], 16); // Channel is conventionally read as hex
       const dataStr = channelMatch[3];
       
+      const key = `${measure}_${channel}`;
+      const index = measureChannelCount[key] || 0;
+      measureChannelCount[key] = index + 1;
+      
       const objCount = dataStr.length / 2;
       for (let i = 0; i < objCount; i++) {
         const objStr = dataStr.substr(i * 2, 2);
@@ -124,6 +131,7 @@ export function parseBms(bmsContent: string, useBase62: boolean): BmsData {
           bmsData.notes.push({
             measure,
             channel,
+            index,
             position: i / objCount,
             value: objVal
           });

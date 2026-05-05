@@ -17,6 +17,11 @@ interface EditorState {
   setBmsData: (data: BmsData | null) => void;
   rawBmsContent: string | null;
   setRawBmsContent: (content: string | null) => void;
+
+  zoomX: number;
+  setZoomX: (val: number) => void;
+  zoomY: number;
+  setZoomY: (val: number) => void;
 }
 
 export const useEditorStore = create<EditorState>((set) => ({
@@ -34,4 +39,9 @@ export const useEditorStore = create<EditorState>((set) => ({
 
   rawBmsContent: null,
   setRawBmsContent: (content) => set({ rawBmsContent: content }),
+
+  zoomX: 1.0,
+  setZoomX: (val) => set({ zoomX: val }),
+  zoomY: 1.0,
+  setZoomY: (val) => set({ zoomY: val }),
 }));
