@@ -1,62 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
-import { FolderOpen, Save, MousePointer2, Pencil, Eraser, Settings2, FileCode2, ZoomIn } from 'lucide-react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import { useEditorStore } from './store/editorStore';
-import { parseBms, encodeBmsValue, BmsData, BmsNote, encodeBms } from './parser/bmsParser';
-import { getRecentFiles, addRecentFile, loadRecentFileHandle, RecentFile } from './utils/fileSystem';
+import { parseBms, encodeBmsValue, decodeBmsValue, BmsData, BmsNote, encodeBms } from './parser/bmsParser';
+import { getRecentFiles, addRecentFile, loadRecentFileHandle, RecentFile, verifyPermission } from './utils/fileSystem';
 import './App.css';
 
-// Lane Layout Configuration
-interface LaneConfig {
-  name: string;
-  type: 'measure' | 'channel' | 'bgm';
-  channel?: number;
-  width: number;
-  color: string;
-  isGroupEnd?: boolean;
-}
+import { LAYOUT, BASE_MEASURE_HEIGHT, getTargetLaneIndex } from './constants/layout';
+import { Topbar } from './components/layout/Topbar';
+import { LeftSidebar } from './components/layout/LeftSidebar';
+import { RightSidebar } from './components/layout/RightSidebar';
 
-const DEFAULT_LANE_WIDTH = 25; // Uniform width for all lanes
-
-const LAYOUT: LaneConfig[] = [
-  // 1. Measure
-  { name: 'MSR', type: 'measure', width: DEFAULT_LANE_WIDTH, color: '#050505', isGroupEnd: true },
-  // 2. Timing
-  { name: 'BPM', type: 'channel', channel: 0x08, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
-  { name: 'STOP', type: 'channel', channel: 0x09, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
-  { name: 'SCR', type: 'channel', channel: 0x02, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a', isGroupEnd: true }, // SCROLL
-  // 3. Video
-  { name: 'BGA', type: 'channel', channel: 0x04, width: DEFAULT_LANE_WIDTH, color: '#080808' },
-  { name: 'LYR', type: 'channel', channel: 0x06, width: DEFAULT_LANE_WIDTH, color: '#080808' },
-  { name: 'POR', type: 'channel', channel: 0x0A, width: DEFAULT_LANE_WIDTH, color: '#080808', isGroupEnd: true },
-  // 4. 1P Notes (11-19)
-  { name: 'S1', type: 'channel', channel: 0x16, width: DEFAULT_LANE_WIDTH, color: '#140c0c' },
-  { name: 'A1', type: 'channel', channel: 0x11, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
-  { name: 'A2', type: 'channel', channel: 0x12, width: DEFAULT_LANE_WIDTH, color: '#111114' },
-  { name: 'A3', type: 'channel', channel: 0x13, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
-  { name: 'A4', type: 'channel', channel: 0x14, width: DEFAULT_LANE_WIDTH, color: '#111114' },
-  { name: 'A5', type: 'channel', channel: 0x15, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
-  { name: 'A6', type: 'channel', channel: 0x18, width: DEFAULT_LANE_WIDTH, color: '#111114' },
-  { name: 'A7', type: 'channel', channel: 0x19, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a', isGroupEnd: true },
-  // 5. 2P Notes (21-29)
-  { name: 'D1', type: 'channel', channel: 0x21, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
-  { name: 'D2', type: 'channel', channel: 0x22, width: DEFAULT_LANE_WIDTH, color: '#111114' },
-  { name: 'D3', type: 'channel', channel: 0x23, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
-  { name: 'D4', type: 'channel', channel: 0x24, width: DEFAULT_LANE_WIDTH, color: '#111114' },
-  { name: 'D5', type: 'channel', channel: 0x25, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
-  { name: 'D6', type: 'channel', channel: 0x28, width: DEFAULT_LANE_WIDTH, color: '#111114' },
-  { name: 'D7', type: 'channel', channel: 0x29, width: DEFAULT_LANE_WIDTH, color: '#0a0a0a' },
-  { name: 'S2', type: 'channel', channel: 0x26, width: DEFAULT_LANE_WIDTH, color: '#140c0c', isGroupEnd: true },
-  // 6. BGM (Generic 32 lanes)
-  ...Array.from({ length: 32 }).map((_, i) => ({
-    name: `B${i + 1}`,
-    type: 'bgm' as const,
-    channel: 0x01,
-    width: DEFAULT_LANE_WIDTH,
-    color: i % 2 === 0 ? '#0a0a0a' : '#0f0f0f'
-  }))
-];
-
-const BASE_MEASURE_HEIGHT = 192; 
 
 function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -88,6 +40,9 @@ function App() {
   }, []);
 
   const isDirty = historyIndex !== lastSavedHistoryIndex;
+
+  const totalNotesCount = bmsData?.notes.length || 0;
+  const playableNotesCount = bmsData?.notes.filter(n => (n.channel >= 0x11 && n.channel <= 0x19) || (n.channel >= 0x21 && n.channel <= 0x29)).length || 0;
 
   // Scroll state
   const scrollY = useRef(0);
@@ -134,6 +89,123 @@ function App() {
     requestRender();
   }, [bmsData, useBase62, zoomX, zoomY, activeTool, gridSnap, selectedNotes]);
 
+  const measureOffsets = useMemo(() => {
+    const offsets: number[] = [];
+    let currentOffset = 0;
+    
+    const noteMax = bmsData && bmsData.notes.length > 0 ? Math.max(...bmsData.notes.map(n => n.measure)) : 0;
+    const lengthMax = bmsData && Object.keys(bmsData.measureLengths).length > 0 ? Math.max(...Object.keys(bmsData.measureLengths).map(Number)) : 0;
+    const maxM = Math.max(100, noteMax, lengthMax) + 1;
+    
+    for (let m = 0; m <= maxM; m++) {
+      offsets.push(currentOffset);
+      const len = bmsData?.measureLengths?.[m] ?? 1;
+      currentOffset += len;
+    }
+    return { offsets, totalLen: currentOffset, maxM };
+  }, [bmsData]);
+
+
+
+  const overlappingNoteIds = useMemo(() => {
+    if (!bmsData) return new Set<string>();
+    const overlaps = new Set<string>();
+    const notes = bmsData.notes;
+    
+    // Sort notes by channel, then by absolute position to optimize
+    const sorted = [...notes].sort((a, b) => {
+      if (a.channel !== b.channel) return a.channel - b.channel;
+      return (a.measure + a.position) - (b.measure + b.position);
+    });
+    
+    for (let i = 0; i < sorted.length; i++) {
+      const a = sorted[i];
+      const isPlayable = (a.channel >= 0x11 && a.channel <= 0x19) || 
+                         (a.channel >= 0x21 && a.channel <= 0x29) || 
+                         (a.channel >= 0x51 && a.channel <= 0x59) || 
+                         (a.channel >= 0x61 && a.channel <= 0x69);
+      const threshold = isPlayable ? (1 / 128) + 1e-6 : 1e-6;
+      const posA = a.measure + a.position;
+      
+      for (let j = i + 1; j < sorted.length; j++) {
+        const b = sorted[j];
+        if (a.channel !== b.channel) break; // Channels are sorted
+        
+        const posB = b.measure + b.position;
+        if (posB - posA > threshold) break; // Exceeded threshold
+        
+        // For BGM, need to check visual lane
+        if (a.channel === 0x01 && (a.index % 100) !== (b.index % 100)) continue;
+        
+        // They overlap!
+        overlaps.add(a.id);
+        overlaps.add(b.id);
+      }
+    }
+    return overlaps;
+  }, [bmsData?.notes]);
+
+  // Find Long Note pairs
+  const longNotePairs = useMemo(() => {
+    if (!bmsData) return [];
+    const pairs: { start: BmsNote, end: BmsNote }[] = [];
+    
+    // 1. Channel 51-59, 61-69 (Traditional LN)
+    const lnNotesByChannel = new Map<number, BmsNote[]>();
+    for (const note of bmsData.notes) {
+      if ((note.channel >= 0x51 && note.channel <= 0x59) || (note.channel >= 0x61 && note.channel <= 0x69)) {
+        if (!lnNotesByChannel.has(note.channel)) lnNotesByChannel.set(note.channel, []);
+        lnNotesByChannel.get(note.channel)!.push(note);
+      }
+    }
+    
+    lnNotesByChannel.forEach(notes => {
+      notes.sort((a, b) => (a.measure + a.position) - (b.measure + b.position));
+      for (let i = 0; i < notes.length - 1; i += 2) {
+        pairs.push({ start: notes[i], end: notes[i+1] });
+      }
+    });
+
+    // 2. LNOBJ
+    const lnObjStr = bmsData.header.lnobj;
+    if (lnObjStr) {
+      const lnObjVal = decodeBmsValue(lnObjStr, useBase62);
+      if (lnObjVal > 0) {
+        const playableNotesByChannel = new Map<number, BmsNote[]>();
+        for (const note of bmsData.notes) {
+          if ((note.channel >= 0x11 && note.channel <= 0x19) || (note.channel >= 0x21 && note.channel <= 0x29)) {
+            if (!playableNotesByChannel.has(note.channel)) playableNotesByChannel.set(note.channel, []);
+            playableNotesByChannel.get(note.channel)!.push(note);
+          }
+        }
+        
+        playableNotesByChannel.forEach(notes => {
+          notes.sort((a, b) => (a.measure + a.position) - (b.measure + b.position));
+          for (let i = 1; i < notes.length; i++) {
+            const n = notes[i];
+            if (n.value === lnObjVal) {
+              const startNote = notes[i-1];
+              if (startNote.value !== lnObjVal) {
+                pairs.push({ start: startNote, end: n });
+              }
+            }
+          }
+        });
+      }
+    }
+    
+    return pairs;
+  }, [bmsData?.notes, bmsData?.header.lnobj, useBase62]);
+
+  const measureOffsetsRef = useRef(measureOffsets);
+  measureOffsetsRef.current = measureOffsets;
+  
+  const overlappingNoteIdsRef = useRef(overlappingNoteIds);
+  overlappingNoteIdsRef.current = overlappingNoteIds;
+
+  const longNotePairsRef = useRef(longNotePairs);
+  longNotePairsRef.current = longNotePairs;
+
   const drawGridAndNotes = () => {
     try {
       const canvas = canvasRef.current;
@@ -143,6 +215,9 @@ function App() {
 
       const currentBmsData = bmsDataRef.current;
       const currentUseBase62 = useBase62Ref.current;
+      const currentMeasureOffsets = measureOffsetsRef.current;
+      const currentOverlapping = overlappingNoteIdsRef.current;
+      const currentLongNotePairs = longNotePairsRef.current;
       const currentZoomX = zoomXRef.current;
       const currentZoomY = zoomYRef.current;
       
@@ -192,11 +267,9 @@ function App() {
       });
 
       // 2. Draw Measure Lines
-      const maxMeasure = currentBmsData && currentBmsData.notes.length > 0
-        ? currentBmsData.notes.reduce((max, note) => Math.max(max, note.measure), 0)
-        : 100;
-      const totalMeasures = Math.max(maxMeasure, 100) + 1;
-      const totalHeight = totalMeasures * currentMeasureHeight + 100;
+      const maxMeasure = currentMeasureOffsets.maxM;
+      const totalMeasures = Math.max(maxMeasure, 100);
+      const totalHeight = currentMeasureOffsets.totalLen * currentMeasureHeight + 100;
 
       // Update scroll bounds
       maxScrollXRef.current = Math.max(0, totalWidth - canvas.width);
@@ -207,7 +280,7 @@ function App() {
       ctx.textAlign = 'center';
 
       for (let m = 0; m <= totalMeasures; m++) {
-        const y = -(m * currentMeasureHeight);
+        const y = -(currentMeasureOffsets.offsets[m] * currentMeasureHeight);
         
         if (y < topY - currentMeasureHeight || y > bottomY + currentMeasureHeight) continue;
 
@@ -218,8 +291,10 @@ function App() {
         ctx.stroke();
 
         ctx.strokeStyle = 'rgba(255,255,255,0.03)';
-        for (let beat = 1; beat < 4; beat++) {
-          const beatY = y - (currentMeasureHeight / 4) * beat;
+        const measureLen = currentBmsData?.measureLengths?.[m] ?? 1;
+        const snap = gridSnapRef.current;
+        for (let beat = 1; beat < snap; beat++) {
+          const beatY = y - (currentMeasureHeight * measureLen / snap) * beat;
           ctx.beginPath();
           ctx.moveTo(50, beatY);
           ctx.lineTo(currentX, beatY);
@@ -232,22 +307,42 @@ function App() {
         }
       }
 
+      // 2.5 Draw Long Note Bodies
+      if (currentBmsData && currentLongNotePairs.length > 0) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        currentLongNotePairs.forEach(pair => {
+          const { start, end } = pair;
+          const startMeasureLen = currentBmsData.measureLengths[start.measure] ?? 1;
+          const endMeasureLen = currentBmsData.measureLengths[end.measure] ?? 1;
+          
+          const startY = -(currentMeasureOffsets.offsets[start.measure] + start.position * startMeasureLen) * currentMeasureHeight;
+          const endY = -(currentMeasureOffsets.offsets[end.measure] + end.position * endMeasureLen) * currentMeasureHeight;
+          
+          if (Math.min(startY, endY) > bottomY + 20 || Math.max(startY, endY) < topY - 20) return;
+
+          let targetLaneIndex = getTargetLaneIndex(zoomedLayout, start.channel, start.index);
+          if (targetLaneIndex !== -1) {
+            let laneX = 50;
+            for (let i = 0; i < targetLaneIndex; i++) laneX += zoomedLayout[i].width;
+            const lWidth = zoomedLayout[targetLaneIndex].width;
+            
+            const yTop = Math.min(startY, endY);
+            const yBottom = Math.max(startY, endY);
+            
+            ctx.fillRect(laneX + 1, yTop, lWidth - 2, yBottom - yTop);
+          }
+        });
+      }
+
       // 3. Draw Notes
       if (currentBmsData) {
         currentBmsData.notes.forEach(note => {
-          const y = -(note.measure * currentMeasureHeight + note.position * currentMeasureHeight);
+          const measureLen = currentBmsData.measureLengths[note.measure] ?? 1;
+          const y = -(currentMeasureOffsets.offsets[note.measure] + note.position * measureLen) * currentMeasureHeight;
           
           if (y < topY - 20 || y > bottomY + 20) return;
 
-          let targetLaneIndex = -1;
-          
-          if (note.channel === 0x01) {
-            // Use the parsed index (occurrence of #xxx01 in the measure) to determine the BGM lane.
-            const bgmOffset = note.index % 32; // Expanded to 32 BGM lanes
-            targetLaneIndex = zoomedLayout.findIndex(l => l.type === 'bgm' && l.name === `B${bgmOffset + 1}`);
-          } else {
-            targetLaneIndex = zoomedLayout.findIndex(l => l.channel === note.channel);
-          }
+          let targetLaneIndex = getTargetLaneIndex(zoomedLayout, note.channel, note.index);
 
           if (targetLaneIndex !== -1) {
             let laneX = 50;
@@ -259,17 +354,37 @@ function App() {
             const noteY = y - noteHeight; // Draw upwards from the baseline
 
             const isSelected = selectedNotesRef.current.includes(note.id);
-            ctx.fillStyle = isSelected ? '#ffaaaa' : '#f4f4f5';
+            const isOverlapping = currentOverlapping.has(note.id);
+            if (isOverlapping) {
+              ctx.fillStyle = '#ffffaa';
+              ctx.strokeStyle = '#bbbb00';
+            } else if (isSelected) {
+              ctx.fillStyle = '#ffaaaa';
+              ctx.strokeStyle = '#ff0000';
+            } else {
+              ctx.fillStyle = '#f4f4f5';
+              ctx.strokeStyle = '#000000';
+            }
             ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
-            
-            ctx.strokeStyle = isSelected ? '#ff0000' : '#000000';
             ctx.strokeRect(laneX + 1, noteY, lWidth - 2, noteHeight);
             
             ctx.fillStyle = '#000000';
             ctx.font = '10px Inter'; // Increased font size
             ctx.textAlign = 'center';
-            // encodeBmsValue avoids the Javascript RangeError of toString(62)
-            ctx.fillText(encodeBmsValue(note.value, currentUseBase62), laneX + lWidth / 2, noteY + 10); // Adjusted Y for larger text
+            let displayText = encodeBmsValue(note.value, currentUseBase62);
+            if (note.channel === 0x03) {
+              displayText = note.value.toString();
+            } else if (note.channel === 0x08) {
+              const bpmVal = currentBmsData.bpms[note.value];
+              if (bpmVal !== undefined) displayText = bpmVal.toString();
+            } else if (note.channel === 0x09) {
+              const stopVal = currentBmsData.stops[note.value];
+              if (stopVal !== undefined) displayText = stopVal.toString();
+            } else if (note.channel === 256) {
+              const scrollVal = currentBmsData.scrolls[note.value];
+              if (scrollVal !== undefined) displayText = scrollVal.toString();
+            }
+            ctx.fillText(displayText, laneX + lWidth / 2, noteY + 10);
           }
         });
       }
@@ -500,10 +615,7 @@ function App() {
           const activeLayout = getActiveLayout();
           
           for (const dn of notesToMove) {
-            const noteInitialLaneIndex = activeLayout.findIndex(l => 
-              l.channel === dn.channel && 
-              (l.type !== 'bgm' || l.name === `B${(dn.index % 32) + 1}`)
-            );
+            const noteInitialLaneIndex = getTargetLaneIndex(activeLayout, dn.channel, dn.index);
             if (noteInitialLaneIndex === -1) continue;
             
             const initialCategory = getLaneCategory(dn.channel);
@@ -549,10 +661,7 @@ function App() {
           
           if (validLaneIndexDiff !== 0) {
             const activeLayout = getActiveLayout();
-            const noteInitialLaneIndex = activeLayout.findIndex(l => 
-              l.channel === dn.channel && 
-              (l.type !== 'bgm' || l.name === `B${(dn.index % 32) + 1}`)
-            );
+            const noteInitialLaneIndex = getTargetLaneIndex(activeLayout, dn.channel, dn.index);
             if (noteInitialLaneIndex !== -1) {
               const newLane = activeLayout[noteInitialLaneIndex + validLaneIndexDiff];
               updates.channel = newLane.channel || 0x01;
@@ -637,8 +746,14 @@ function App() {
         const measureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
         const absolutePosition = -ctxY / measureHeight;
         
-        let targetMeasure = Math.floor(absolutePosition);
-        let targetPos = absolutePosition - targetMeasure;
+        let targetMeasure = 0;
+        while (targetMeasure < measureOffsets.offsets.length - 1 && measureOffsets.offsets[targetMeasure + 1] <= absolutePosition) {
+          targetMeasure++;
+        }
+        const measureStart = measureOffsets.offsets[targetMeasure];
+        const measureLen = bmsDataRef.current?.measureLengths?.[targetMeasure] ?? 1;
+        let targetPos = (absolutePosition - measureStart) / measureLen;
+        
         const snap = gridSnapRef.current;
         targetPos = Math.round(targetPos * snap) / snap;
         if (targetPos >= 1) { targetMeasure += 1; targetPos = 0; }
@@ -653,20 +768,14 @@ function App() {
         };
 
         const targetLaneIndex = activeLayout.findIndex(l => l === targetLane);
-        const startLaneIndex = activeLayout.findIndex(l => 
-          l.channel === dragStartBmsPos.current!.channel && 
-          (l.type !== 'bgm' || l.name === `B${(dragStartBmsPos.current!.index % 32) + 1}`)
-        );
+        const startLaneIndex = getTargetLaneIndex(activeLayout, dragStartBmsPos.current!.channel, dragStartBmsPos.current!.index);
         const laneIndexDiff = startLaneIndex !== -1 && targetLaneIndex !== -1 ? targetLaneIndex - startLaneIndex : 0;
 
         let minAllowedDiff = -Infinity;
         let maxAllowedDiff = Infinity;
 
         for (const dn of dragNoteInitialState.current) {
-          const noteInitialLaneIndex = activeLayout.findIndex(l => 
-            l.channel === dn.initialChannel && 
-            (l.type !== 'bgm' || l.name === `B${(dn.initialIndex % 32) + 1}`)
-          );
+          const noteInitialLaneIndex = getTargetLaneIndex(activeLayout, dn.initialChannel, dn.initialIndex);
           if (noteInitialLaneIndex === -1) continue;
           
           const initialCategory = getLaneCategory(dn.initialChannel);
@@ -710,10 +819,7 @@ function App() {
           const updates: any = { measure: newMeasure, position: newPosition };
           
           if (validLaneIndexDiff !== 0) {
-            const noteInitialLaneIndex = activeLayout.findIndex(l => 
-              l.channel === dn.initialChannel && 
-              (l.type !== 'bgm' || l.name === `B${(dn.initialIndex % 32) + 1}`)
-            );
+            const noteInitialLaneIndex = getTargetLaneIndex(activeLayout, dn.initialChannel, dn.initialIndex);
             if (noteInitialLaneIndex !== -1) {
               const newLane = activeLayout[noteInitialLaneIndex + validLaneIndexDiff];
               updates.channel = newLane.channel || 0x01;
@@ -745,19 +851,15 @@ function App() {
         const activeLayout = getActiveLayout();
 
         bmsDataRef.current.notes.forEach(note => {
-          let targetLaneIndex = -1;
-          if (note.channel === 0x01) {
-            targetLaneIndex = activeLayout.findIndex(l => l.type === 'bgm' && l.name === `B${(note.index % 32) + 1}`);
-          } else {
-            targetLaneIndex = activeLayout.findIndex(l => l.channel === note.channel);
-          }
+          let targetLaneIndex = getTargetLaneIndex(activeLayout, note.channel, note.index);
           if (targetLaneIndex === -1) return;
 
           let laneX = 50;
           for (let i = 0; i < targetLaneIndex; i++) laneX += activeLayout[i].width * currentZoomX;
           const lWidth = activeLayout[targetLaneIndex].width * currentZoomX;
 
-          const y = -(note.measure * currentMeasureHeight + note.position * currentMeasureHeight);
+          const measureLen = bmsDataRef.current?.measureLengths?.[note.measure] ?? 1;
+          const y = -(measureOffsets.offsets[note.measure] + note.position * measureLen) * currentMeasureHeight;
           const noteY = y - 12;
           
           const canvasNoteX = laneX - scrollX.current;
@@ -820,17 +922,23 @@ function App() {
     if (!targetLane) return null;
     
     const measureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
-    const absolutePosition = -ctxY / measureHeight;
+    const absolutePosition = -ctxY / measureHeight; // This is the cumulative length
     
-    let measure = Math.floor(absolutePosition);
-    let position = absolutePosition - measure;
+    let targetMeasure = 0;
+    while (targetMeasure < measureOffsets.offsets.length - 1 && measureOffsets.offsets[targetMeasure + 1] <= absolutePosition) {
+      targetMeasure++;
+    }
+    
+    const measureStart = measureOffsets.offsets[targetMeasure];
+    const measureLen = bmsDataRef.current?.measureLengths?.[targetMeasure] ?? 1;
+    let position = (absolutePosition - measureStart) / measureLen;
     
     const snap = gridSnapRef.current;
     position = Math.round(position * snap) / snap;
-    if (position >= 1) { measure += 1; position = 0; }
-    if (measure < 0) return null;
+    if (position >= 1) { targetMeasure += 1; position = 0; }
+    if (targetMeasure < 0) return null;
 
-    return { measure, position, lane: targetLane };
+    return { measure: targetMeasure, position, lane: targetLane };
   };
 
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -870,12 +978,17 @@ function App() {
 
     const findNoteAt = () => {
       const POS_TOLERANCE = 0.05;
-      return bmsDataRef.current!.notes.find(n => 
-        n.measure === measure && 
-        n.channel === actualChannel && 
-        (n.channel !== 0x01 || n.index === actualIndex) &&
-        Math.abs(n.position - position) < POS_TOLERANCE
-      );
+      const notes = bmsDataRef.current!.notes;
+      for (let i = notes.length - 1; i >= 0; i--) {
+        const n = notes[i];
+        if (n.measure === measure && 
+            n.channel === actualChannel && 
+            (n.channel !== 0x01 || n.index === actualIndex) &&
+            Math.abs(n.position - position) < POS_TOLERANCE) {
+          return n;
+        }
+      }
+      return undefined;
     };
 
     if (activeToolRef.current === 'write') {
@@ -912,15 +1025,39 @@ function App() {
             initialIndex: clickedNote.index
           }];
         } else {
-          dragNoteInitialState.current = bmsDataRef.current.notes
-            .filter(n => selectedNotesRef.current.includes(n.id))
-            .map(n => ({
-              id: n.id,
-              initialMeasure: n.measure,
-              initialPosition: n.position,
-              initialChannel: n.channel,
-              initialIndex: n.index
-            }));
+          let dragNotes = bmsDataRef.current.notes.filter(n => selectedNotesRef.current.includes(n.id));
+          
+          if (dragNotes.length === 2) {
+            const [n1, n2] = dragNotes;
+            const isPlayable = (n1.channel >= 0x11 && n1.channel <= 0x19) || 
+                               (n1.channel >= 0x21 && n1.channel <= 0x29) || 
+                               (n1.channel >= 0x51 && n1.channel <= 0x59) || 
+                               (n1.channel >= 0x61 && n1.channel <= 0x69);
+            const threshold = isPlayable ? (1 / 128) + 1e-6 : 1e-6;
+            
+            let overlapEachOther = false;
+            if (n1.channel === n2.channel) {
+              if (n1.channel === 0x01) {
+                overlapEachOther = (n1.index % 100) === (n2.index % 100) && Math.abs(n1.measure + n1.position - (n2.measure + n2.position)) <= threshold;
+              } else {
+                overlapEachOther = Math.abs(n1.measure + n1.position - (n2.measure + n2.position)) <= threshold;
+              }
+            }
+            
+            if (overlapEachOther) {
+              const topNote = bmsDataRef.current.notes.indexOf(n1) > bmsDataRef.current.notes.indexOf(n2) ? n1 : n2;
+              dragNotes = [topNote];
+              setSelectedNotes([topNote.id]);
+            }
+          }
+
+          dragNoteInitialState.current = dragNotes.map(n => ({
+            id: n.id,
+            initialMeasure: n.measure,
+            initialPosition: n.position,
+            initialChannel: n.channel,
+            initialIndex: n.index
+          }));
         }
         isDraggingNotes.current = true;
         dragStartBmsPos.current = { measure, position, channel: actualChannel, index: actualIndex };
@@ -994,12 +1131,22 @@ function App() {
     setIsFileMenuOpen(false);
     if (!isDirty || !bmsDataRef.current) return;
 
+    if (overlappingNoteIds.size > 0) {
+      if (!window.confirm('겹친 노트가 존재합니다. 그래도 저장하시겠습니까?')) return;
+    }
+
     if (!fileHandle) {
       handleSaveAs();
       return;
     }
 
     try {
+      const hasPermission = await verifyPermission(fileHandle, true);
+      if (!hasPermission) {
+        alert("Cannot save file because write permission was denied by the user.");
+        return;
+      }
+      
       const bmsString = encodeBms(bmsDataRef.current, useBase62Ref.current);
       const writable = await fileHandle.createWritable();
       await writable.write(bmsString);
@@ -1014,6 +1161,10 @@ function App() {
   const handleSaveAs = async () => {
     setIsFileMenuOpen(false);
     if (!bmsDataRef.current) return;
+
+    if (overlappingNoteIds.size > 0) {
+      if (!window.confirm('겹친 노트가 존재합니다. 그래도 저장하시겠습니까?')) return;
+    }
 
     try {
       const handle = await (window as any).showSaveFilePicker({
@@ -1077,278 +1228,35 @@ function App() {
 
   return (
     <div className="app-container">
-      <header className="topbar">
-        <div className="topbar-logo">kBMSE</div>
-        <div className="topbar-menu">
-          <div style={{ position: 'relative' }}>
-            <div className={`menu-item ${isFileMenuOpen ? 'active' : ''}`} onClick={() => setIsFileMenuOpen(!isFileMenuOpen)}>File</div>
-            {isFileMenuOpen && (
-              <div className="dropdown-menu">
-                <div className="dropdown-item" onClick={handleNew}>새로 만들기 (New)</div>
-                <div className="dropdown-item" onClick={handleOpen}>열기 (Open)</div>
-                <div className={`dropdown-item ${!isDirty || !bmsData ? 'disabled' : ''}`} onClick={handleSave}>저장 (Save)</div>
-                <div className={`dropdown-item ${!bmsData ? 'disabled' : ''}`} onClick={handleSaveAs}>다른 이름으로 저장 (Save As)</div>
-                {recentFiles.length > 0 && <div className="dropdown-divider"></div>}
-                {recentFiles.map(r => (
-                  <div key={r.id} className="dropdown-item" onClick={() => handleRecentClick(r.id)}>{r.name}</div>
-                ))}
-                <div className="dropdown-divider"></div>
-                <div className="dropdown-item" onClick={handleExit}>종료 (Exit)</div>
-              </div>
-            )}
-          </div>
-          <div className="menu-item">Edit</div>
-          <div className="menu-item">View</div>
-          <div className="menu-item">Play</div>
-          <div className="menu-item">Help</div>
-        </div>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-            Mode: {useBase62 ? '62-Base' : '36-Base'}
-          </span>
-          <button 
-            onClick={handleToggleMode}
-            style={{ 
-              background: 'transparent', 
-              border: '1px solid var(--border-color)', 
-              color: 'var(--text-primary)',
-              borderRadius: '4px',
-              padding: '4px 8px',
-              cursor: 'pointer',
-              fontSize: '0.8rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}
-          >
-            <Settings2 size={14} /> Toggle
-          </button>
-        </div>
-      </header>
+      <Topbar 
+  isFileMenuOpen={isFileMenuOpen} setIsFileMenuOpen={setIsFileMenuOpen} 
+  handleNew={handleNew} handleOpen={handleOpen} handleSave={handleSave} 
+  handleSaveAs={handleSaveAs} handleRecentClick={handleRecentClick} 
+  handleExit={handleExit} isDirty={isDirty} hasBmsData={!!bmsData} 
+  recentFiles={recentFiles} useBase62={useBase62} handleToggleMode={handleToggleMode} 
+/>
 
-      <div className="main-area">
-        <aside className="sidebar">
-          <div>
-            <div className="panel-title">Actions</div>
-            <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
-              <button 
-                className="tool-button" 
-                style={{ flex: 1, justifyContent: 'center' }}
-                onClick={handleOpen}
-              >
-                <FolderOpen size={16} /> Open
-              </button>
-              <button 
-                className={`tool-button ${!isDirty || !bmsData ? 'disabled' : ''}`} 
-                style={{ flex: 1, justifyContent: 'center', opacity: (!isDirty || !bmsData) ? 0.5 : 1, cursor: (!isDirty || !bmsData) ? 'not-allowed' : 'pointer' }}
-                onClick={handleSave}
-              >
-                <Save size={16} /> Save
-              </button>
-            </div>
-          </div>
+<div className="main-area">
+  <LeftSidebar 
+    handleOpen={handleOpen} handleSave={handleSave} 
+    isDirty={isDirty} hasBmsData={!!bmsData} 
+    totalNotesCount={totalNotesCount} playableNotesCount={playableNotesCount} 
+    activeTool={activeTool} setActiveTool={setActiveTool} 
+  />
 
-          <div>
-            <div className="panel-title">Tools</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <button 
-                className={`tool-button ${activeTool === 'select' ? 'active' : ''}`}
-                onClick={() => setActiveTool('select')}
-              >
-                <MousePointer2 size={16} /> Select
-              </button>
-              <button 
-                className={`tool-button ${activeTool === 'write' ? 'active' : ''}`}
-                onClick={() => setActiveTool('write')}
-              >
-                <Pencil size={16} /> Write
-              </button>
-              <button 
-                className={`tool-button ${activeTool === 'erase' ? 'active' : ''}`}
-                onClick={() => setActiveTool('erase')}
-              >
-                <Eraser size={16} /> Erase
-              </button>
-            </div>
-          </div>
-        </aside>
+  <main className="canvas-container" ref={containerRef}>
+    <canvas ref={canvasRef} onMouseDown={handleCanvasMouseDown} />
+  </main>
 
-        <main className="canvas-container" ref={containerRef}>
-          <canvas ref={canvasRef} onMouseDown={handleCanvasMouseDown} />
-        </main>
-
-        <aside className="right-panel" style={{ display: 'flex', flexDirection: 'column' }}>
-          <div className="panel-title">Header Info</div>
-          
-          {bmsData ? (
-            <div style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}>
-              <div className="property-item">
-                <span className="property-label">Title</span>
-                <span className="property-value">{bmsData.header.title || 'Untitled'}</span>
-              </div>
-              <div className="property-item">
-                <span className="property-label">Artist</span>
-                <span className="property-value">{bmsData.header.artist || 'Unknown'}</span>
-              </div>
-              <div className="property-item">
-                <span className="property-label">Genre</span>
-                <span className="property-value">{bmsData.header.genre || '-'}</span>
-              </div>
-              <div className="property-item">
-                <span className="property-label">BPM</span>
-                <span className="property-value">{bmsData.header.bpm}</span>
-              </div>
-              <div className="property-item">
-                <span className="property-label">PlayLevel</span>
-                <span className="property-value">{bmsData.header.playLevel}</span>
-              </div>
-              <div className="property-item">
-                <span className="property-label">Player</span>
-                <select 
-                  className="property-value" 
-                  style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '4px 8px', fontSize: '0.9rem', outline: 'none', cursor: 'pointer' }}
-                  value={bmsData.header.player}
-                  onChange={(e) => updateHeader({ player: parseInt(e.target.value) })}
-                >
-                  <option value={1}>1 - Single Play</option>
-                  <option value={2}>2 - Couple Play</option>
-                  <option value={3}>3 - Double Play</option>
-                </select>
-              </div>
-              <div className="property-item">
-                <span className="property-label">Rank</span>
-                <span className="property-value">{bmsData.header.rank}</span>
-              </div>
-              <div className="property-item">
-                <span className="property-label">Total Notes</span>
-                <span className="property-value">{bmsData.notes.length}</span>
-              </div>
-              <div className="property-item">
-                <span className="property-label">Total</span>
-                <span className="property-value">{bmsData.header.total || 160}</span>
-              </div>
-            </div>
-          ) : (
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', textAlign: 'center', marginTop: '20px', flex: 1 }}>
-              <FileCode2 size={32} style={{ opacity: 0.5, margin: '0 auto 10px' }} />
-              <p>No BMS file loaded.</p>
-            </div>
-          )}
-
-          {/* Grid Snap Controls */}
-          <div style={{ marginTop: 'auto', paddingTop: '20px', borderTop: '1px solid var(--border-color)' }}>
-            <div className="panel-title">Grid Snap</div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem' }}>
-                <span>1/</span>
-                <input 
-                  type="number"
-                  defaultValue={gridSnap}
-                  key={`snap-${gridSnap}`}
-                  onBlur={(e) => {
-                    let val = parseInt(e.target.value);
-                    if (isNaN(val)) val = gridSnap;
-                    if (val < 1) val = 1;
-                    if (val > 10000) val = 10000;
-                    setGridSnap(val);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') e.currentTarget.blur();
-                  }}
-                  style={{ width: '55px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '2px 4px', fontSize: '0.85rem' }}
-                />
-              </div>
-              <div style={{ display: 'flex', gap: '5px' }}>
-                <button 
-                  className="tool-button" 
-                  style={{ padding: '2px 8px', minWidth: '30px', justifyContent: 'center' }}
-                  onClick={() => setGridSnap(Math.max(1, Math.floor(gridSnap / 2)))}
-                >
-                  -
-                </button>
-                <button 
-                  className="tool-button" 
-                  style={{ padding: '2px 8px', minWidth: '30px', justifyContent: 'center' }}
-                  onClick={() => setGridSnap(Math.min(10000, gridSnap * 2))}
-                >
-                  +
-                </button>
-              </div>
-            </div>
-            
-          {/* Zoom Controls */}
-            <div className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-              <ZoomIn size={14} /> Zoom
-            </div>
-            
-            <div style={{ marginBottom: '10px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-                <span>Horizontal (X)</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
-                  <input 
-                    type="number"
-                    defaultValue={Math.round(zoomX * 100)}
-                    key={`zx-${Math.round(zoomX * 100)}`}
-                    onBlur={(e) => {
-                      let val = parseInt(e.target.value);
-                      if (isNaN(val)) val = Math.round(zoomX * 100);
-                      if (val < 50) val = 50;
-                      if (val > 300) val = 300;
-                      setZoomX(val / 100);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') e.currentTarget.blur();
-                    }}
-                    style={{ width: '45px', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px', textAlign: 'right', padding: '2px', fontSize: '0.75rem' }}
-                  />
-                  <span>%</span>
-                </div>
-              </div>
-              <input 
-                type="range" 
-                min="0.5" max="3" step="0.1" 
-                value={zoomX} 
-                onChange={(e) => setZoomX(parseFloat(e.target.value))}
-                style={{ width: '100%' }}
-              />
-            </div>
-
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-                <span>Vertical (Y)</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
-                  <input 
-                    type="number"
-                    defaultValue={Math.round(zoomY * 100)}
-                    key={`zy-${Math.round(zoomY * 100)}`}
-                    onBlur={(e) => {
-                      let val = parseInt(e.target.value);
-                      if (isNaN(val)) val = Math.round(zoomY * 100);
-                      if (val < 10) val = 10;
-                      if (val > 10000) val = 10000;
-                      setZoomY(val / 100);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') e.currentTarget.blur();
-                    }}
-                    style={{ width: '45px', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px', textAlign: 'right', padding: '2px', fontSize: '0.75rem' }}
-                  />
-                  <span>%</span>
-                </div>
-              </div>
-              <input 
-                type="range" 
-                min="0.5" max="4" step="0.1" 
-                value={zoomY} 
-                onChange={(e) => setZoomY(parseFloat(e.target.value))}
-                style={{ width: '100%' }}
-              />
-            </div>
-          </div>
-        </aside>
-      </div>
-    </div>
-  );
+  <RightSidebar 
+    bmsData={bmsData} updateHeader={updateHeader} 
+    gridSnap={gridSnap} setGridSnap={setGridSnap} 
+    zoomX={zoomX} setZoomX={setZoomX} 
+    zoomY={zoomY} setZoomY={setZoomY} 
+  />
+</div>
+</div>
+);
 }
 
 export default App;

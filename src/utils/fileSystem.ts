@@ -84,7 +84,7 @@ export const loadRecentFileHandle = async (id: string): Promise<FileSystemFileHa
     const handle = await getHandleFromDB(id);
     if (!handle) return null;
     
-    const hasPermission = await verifyPermission(handle, true);
+    const hasPermission = await verifyPermission(handle, false);
     if (!hasPermission) return null;
     return handle;
   } catch (e) {

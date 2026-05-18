@@ -41,6 +41,10 @@ export interface BmsData {
   notes: BmsNote[];
   wavs: Record<number, string>;
   bmps: Record<number, string>;
+  bpms: Record<number, number>;
+  stops: Record<number, number>;
+  scrolls: Record<number, number>;
+  measureLengths: Record<number, number>;
 }
 
 const BASE36_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -99,12 +103,16 @@ export function parseBms(bmsContent: string, useBase62: boolean): BmsData {
     },
     notes: [],
     wavs: {},
-    bmps: {}
+    bmps: {},
+    bpms: {},
+    stops: {},
+    scrolls: {},
+    measureLengths: {}
   };
 
   const channelRegex = /^#([0-9]{3})([0-9A-Z]{2}):(.+)$/i;
   const headerRegex = /^#([A-Z0-9]+)\s+(.+)$/i;
-  const defRegex = /^#(WAV|BMP)([0-9A-Z]{2})\s+(.+)$/i;
+  const defRegex = /^#(WAV|BMP|BPM|STOP|SCROLL)([0-9A-Z]{2})\s+(.+)$/i;
 
   const measureChannelCount: Record<string, number> = {};
 
@@ -112,7 +120,7 @@ export function parseBms(bmsContent: string, useBase62: boolean): BmsData {
     const trimmed = line.trim();
     if (!trimmed.startsWith("#")) continue;
 
-    // Check Definition (#WAV01, #BMP01)
+    // Check Definition (#WAV01, #BMP01, #BPM01, #STOP01, #SCROLL01)
     const defMatch = trimmed.match(defRegex);
     if (defMatch) {
       const type = defMatch[1].toUpperCase();
@@ -122,15 +130,34 @@ export function parseBms(bmsContent: string, useBase62: boolean): BmsData {
       
       if (type === "WAV") bmsData.wavs[id] = val;
       else if (type === "BMP") bmsData.bmps[id] = val;
+      else if (type === "BPM") bmsData.bpms[id] = parseFloat(val);
+      else if (type === "STOP") bmsData.stops[id] = parseFloat(val);
+      else if (type === "SCROLL") bmsData.scrolls[id] = parseFloat(val);
       continue;
     }
 
-    // Check Channel (#00111:00010001)
+    // Check Measure Length with space instead of colon (e.g. #00102 0.5)
+    const spaceMeasureMatch = trimmed.match(/^#([0-9]{3})02\s+(.+)$/i);
+    if (spaceMeasureMatch) {
+      const measure = parseInt(spaceMeasureMatch[1], 10);
+      bmsData.measureLengths[measure] = parseFloat(spaceMeasureMatch[2]);
+      continue;
+    }
+
     const channelMatch = trimmed.match(channelRegex);
     if (channelMatch) {
       const measure = parseInt(channelMatch[1], 10);
-      const channel = parseInt(channelMatch[2], 16); // Channel is conventionally read as hex
+      const channelStr = channelMatch[2].toUpperCase();
       const dataStr = channelMatch[3];
+      
+      // Parse measure lengths (channel 02)
+      if (channelStr === "02") {
+        bmsData.measureLengths[measure] = parseFloat(dataStr);
+        continue;
+      }
+      
+      const channel = channelStr === "SC" ? 256 : parseInt(channelStr, 16); // Channel is conventionally read as hex
+
       
       const key = `${measure}_${channel}`;
       const index = measureChannelCount[key] || 0;
@@ -139,7 +166,7 @@ export function parseBms(bmsContent: string, useBase62: boolean): BmsData {
       const objCount = dataStr.length / 2;
       for (let i = 0; i < objCount; i++) {
         const objStr = dataStr.substr(i * 2, 2);
-        const objVal = decodeBmsValue(objStr, useBase62);
+        const objVal = channel === 0x03 ? parseInt(objStr, 16) : decodeBmsValue(objStr, useBase62);
         
         if (objVal > 0) {
           bmsData.notes.push({
@@ -253,6 +280,16 @@ export function encodeBms(bmsData: BmsData, useBase62: boolean): string {
   writeDict("BMP", bmsData.bmps);
   lines.push("");
 
+  // 2.5 Measure Lengths
+  const sortedMeasures = Object.keys(bmsData.measureLengths).map(Number).sort((a, b) => a - b);
+  for (const m of sortedMeasures) {
+    const val = bmsData.measureLengths[m];
+    if (val !== 1) {
+      lines.push(`#${m.toString().padStart(3, "0")}02:${val}`);
+    }
+  }
+  if (sortedMeasures.length > 0) lines.push("");
+
   // 3. Notes
   // Group notes by measure, channel, and index
   const groups: Record<string, BmsNote[]> = {};
@@ -297,12 +334,12 @@ export function encodeBms(bmsData: BmsData, useBase62: boolean): string {
     for (const n of notes) {
       const idx = Math.round(n.position * res);
       if (idx >= 0 && idx < res) {
-        arr[idx] = encodeBmsValue(n.value, useBase62);
+        arr[idx] = channel === 0x03 ? n.value.toString(16).toUpperCase().padStart(2, '0') : encodeBmsValue(n.value, useBase62);
       }
     }
     
     const measureStr = measure.toString().padStart(3, "0");
-    const channelStr = channel.toString(16).padStart(2, "0").toUpperCase();
+    const channelStr = channel === 256 ? "SC" : channel.toString(16).padStart(2, "0").toUpperCase();
     lines.push(`#${measureStr}${channelStr}:${arr.join("")}`);
   }
 
