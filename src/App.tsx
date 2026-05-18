@@ -61,6 +61,10 @@ function App() {
   const initialScrollY = useRef(0);
   const initialScrollX = useRef(0);
 
+  // Resize State
+  const isResizingLeft = useRef(false);
+  const isResizingRight = useRef(false);
+
   // References to state to avoid stale closures in requestAnimationFrame
   const bmsDataRef = useRef<BmsData | null>(null);
   const useBase62Ref = useRef<boolean>(useBase62);
@@ -73,6 +77,12 @@ function App() {
     }
     return LAYOUT;
   };
+
+  // Replaced with refs for performance:
+  const leftWidthRef = useRef(280);
+  const rightWidthRef = useRef(300);
+  const appContainerRef = useRef<HTMLDivElement>(null);
+
   const zoomYRef = useRef<number>(zoomY);
   const activeToolRef = useRef<string>(activeTool);
   const gridSnapRef = useRef<number>(gridSnap);
@@ -88,6 +98,49 @@ function App() {
     selectedNotesRef.current = selectedNotes;
     requestRender();
   }, [bmsData, useBase62, zoomX, zoomY, activeTool, gridSnap, selectedNotes]);
+
+  useEffect(() => {
+    let animationFrameId: number;
+
+    const handleGlobalMouseMove = (e: MouseEvent) => {
+      if (!isResizingLeft.current && !isResizingRight.current) return;
+
+      cancelAnimationFrame(animationFrameId);
+      animationFrameId = requestAnimationFrame(() => {
+        if (isResizingLeft.current) {
+          let newWidth = e.clientX;
+          if (newWidth < 200) newWidth = 200;
+          if (newWidth > 600) newWidth = 600;
+          leftWidthRef.current = newWidth;
+          if (appContainerRef.current) {
+            appContainerRef.current.style.setProperty('--sidebar-width', `${newWidth}px`);
+          }
+          requestRender();
+        } else if (isResizingRight.current) {
+          let newWidth = window.innerWidth - e.clientX;
+          if (newWidth < 250) newWidth = 250;
+          if (newWidth > 600) newWidth = 600;
+          rightWidthRef.current = newWidth;
+          if (appContainerRef.current) {
+            appContainerRef.current.style.setProperty('--right-panel-width', `${newWidth}px`);
+          }
+          requestRender();
+        }
+      });
+    };
+    const handleGlobalMouseUp = () => {
+      isResizingLeft.current = false;
+      isResizingRight.current = false;
+    };
+
+    window.addEventListener('mousemove', handleGlobalMouseMove);
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleGlobalMouseMove);
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, []);
 
   const measureOffsets = useMemo(() => {
     const offsets: number[] = [];
@@ -1271,7 +1324,11 @@ function App() {
   };
 
   return (
-    <div className="app-container">
+    <div 
+      className="app-container" 
+      ref={appContainerRef}
+      style={{ '--sidebar-width': `${leftWidthRef.current}px`, '--right-panel-width': `${rightWidthRef.current}px` } as React.CSSProperties}
+    >
       <Topbar 
   isFileMenuOpen={isFileMenuOpen} setIsFileMenuOpen={setIsFileMenuOpen} 
   handleNew={handleNew} handleOpen={handleOpen} handleSave={handleSave} 
@@ -1286,6 +1343,11 @@ function App() {
     isDirty={isDirty} hasBmsData={!!bmsData} 
     totalNotesCount={totalNotesCount} playableNotesCount={playableNotesCount} 
     activeTool={activeTool} setActiveTool={setActiveTool} 
+  />
+
+  <div 
+    className="resizer resizer-left"
+    onMouseDown={() => { isResizingLeft.current = true; }}
   />
 
   <main className="canvas-container" ref={containerRef}>
@@ -1323,6 +1385,11 @@ function App() {
       style={{ cursor: 'crosshair' }}
     />
   </main>
+
+  <div 
+    className="resizer resizer-right"
+    onMouseDown={() => { isResizingRight.current = true; }}
+  />
 
   <RightSidebar 
     bmsData={bmsData} updateHeader={updateHeader} 

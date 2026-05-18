@@ -29,6 +29,7 @@ interface EditorState {
   updateHeader: (updates: Partial<BmsData['header']>) => void;
   updateWav: (index: number, filename: string) => void;
   updateBmp: (index: number, filename: string) => void;
+  updateMeasureLength: (measure: number, length: number) => void;
   rawBmsContent: string | null;
   setRawBmsContent: (content: string | null) => void;
 
@@ -111,6 +112,16 @@ export const useEditorStore = create<EditorState>((set) => ({
       bmsData: {
         ...state.bmsData,
         bmps: { ...state.bmsData.bmps, [index]: filename }
+      }
+    };
+  }),
+
+  updateMeasureLength: (measure, length) => set((state) => {
+    if (!state.bmsData) return state;
+    return {
+      bmsData: {
+        ...state.bmsData,
+        measureLengths: { ...state.bmsData.measureLengths, [measure]: length }
       }
     };
   }),

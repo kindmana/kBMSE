@@ -1,8 +1,9 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { FileCode2, ZoomIn, ChevronDown, ChevronRight, Music, Image, Monitor } from 'lucide-react';
 import { BmsData, encodeBmsValue } from '../../parser/bmsParser';
 import { TextInput, NumberInput, SelectInput, FileInput, LnObjInput } from '../ui/PropertyInputs';
 import { useEditorStore } from '../../store/editorStore';
+import { MeasureLengthModal } from '../ui/MeasureLengthModal';
 
 interface RightSidebarProps {
   bmsData: BmsData | null;
@@ -31,11 +32,12 @@ export const RightSidebar = ({
   zoomY,
   setZoomY
 }: RightSidebarProps) => {
-  const { currentNoteValue, setCurrentNoteValue } = useEditorStore();
+  const { currentNoteValue, setCurrentNoteValue, updateMeasureLength } = useEditorStore();
 
   const [openSections, setOpenSections] = useState({
     header: true,
     wavbmp: true,
+    measure: true,
     display: true
   });
 
@@ -44,6 +46,27 @@ export const RightSidebar = ({
   };
 
   const [activeTab, setActiveTab] = useState<'wav' | 'bmp'>('wav');
+  
+  const [maxVisibleMeasure, setMaxVisibleMeasure] = useState(100);
+  const [editingMeasureIndex, setEditingMeasureIndex] = useState<number | null>(null);
+
+  // Initialize maxVisibleMeasure based on used measures
+  useEffect(() => {
+    if (bmsData) {
+      let maxUsed = 0;
+      for (const note of bmsData.notes) {
+        if (note.measure > maxUsed) maxUsed = note.measure;
+      }
+      setMaxVisibleMeasure(Math.min(999, Math.max(100, maxUsed + 20)));
+    }
+  }, [bmsData]);
+
+  const handleMeasureListScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    if (target.scrollHeight - target.scrollTop <= target.clientHeight + 50) {
+      setMaxVisibleMeasure(prev => Math.min(999, prev + 50));
+    }
+  };
 
   // Hidden file inputs
   const wavInputRef = useRef<HTMLInputElement>(null);
@@ -108,6 +131,8 @@ export const RightSidebar = ({
             padding: '4px 8px',
             fontSize: '0.8rem',
             alignItems: 'center',
+            contentVisibility: 'auto',
+            containIntrinsicSize: '26px',
             background: currentNoteValue === i ? 'rgba(255,255,255,0.15)' : (filename ? 'rgba(255,255,255,0.02)' : 'transparent')
           }}
           onMouseEnter={(e) => { if (currentNoteValue !== i) e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }}
@@ -141,6 +166,71 @@ export const RightSidebar = ({
         <div style={{ overflowY: 'auto', flex: 1, userSelect: 'none' }}>
           {items}
         </div>
+      </div>
+    );
+  };
+
+  const decimalToFractionStr = (decimal: number) => {
+    const commonDenoms = [4, 8, 16, 32, 64, 128, 192, 256, 384];
+    for (const den of commonDenoms) {
+      const num = Math.round(decimal * den);
+      if (Math.abs(num / den - decimal) < 1e-6) {
+        return `${num} / ${den}`;
+      }
+    }
+    let bestNum = 1, bestDen = 1;
+    let minError = Math.abs(decimal - 1);
+    for (let den = 1; den <= 1000; den++) {
+      const num = Math.round(decimal * den);
+      const error = Math.abs(num / den - decimal);
+      if (error < minError) {
+        bestNum = num;
+        bestDen = den;
+        minError = error;
+        if (error < 1e-10) break;
+      }
+    }
+    return `${bestNum} / ${bestDen}`;
+  };
+
+  const renderMeasureList = () => {
+    if (!bmsData) return null;
+    const items = [];
+    for (let i = 0; i <= maxVisibleMeasure; i++) {
+      const length = bmsData.measureLengths[i] ?? 1;
+      const fracStr = decimalToFractionStr(length);
+      items.push(
+        <div 
+          key={i} 
+          onDoubleClick={() => setEditingMeasureIndex(i)}
+          style={{ 
+            display: 'flex', 
+            borderBottom: '1px solid var(--border-color)', 
+            cursor: 'pointer',
+            padding: '4px 8px',
+            fontSize: '0.8rem',
+            alignItems: 'center',
+            contentVisibility: 'auto',
+            containIntrinsicSize: '26px',
+            background: length !== 1 ? 'rgba(255,255,255,0.02)' : 'transparent'
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+          onMouseLeave={(e) => e.currentTarget.style.background = length !== 1 ? 'rgba(255,255,255,0.02)' : 'transparent'}
+          className="list-item-hover"
+        >
+          <span style={{ width: '35px', color: 'var(--text-secondary)' }}>{i.toString().padStart(3, '0')}</span>
+          <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--text-primary)' }}>
+            {length} <span style={{ color: 'var(--text-secondary)' }}>({fracStr})</span>
+          </span>
+        </div>
+      );
+    }
+    return (
+      <div 
+        style={{ overflowY: 'auto', flex: 1, height: '200px', userSelect: 'none' }}
+        onScroll={handleMeasureListScroll}
+      >
+        {items}
       </div>
     );
   };
@@ -239,6 +329,20 @@ export const RightSidebar = ({
         {openSections.wavbmp && (
           <div style={{ marginTop: '10px' }}>
             {bmsData ? renderWavBmpList() : (
+              <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center', padding: '20px 0' }}>
+                No BMS file loaded.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Measure Length List Section */}
+      <div style={{ display: 'flex', flexDirection: 'column', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
+        <AccordionHeader title="Measure Length" section="measure" />
+        {openSections.measure && (
+          <div style={{ marginTop: '10px' }}>
+            {bmsData ? renderMeasureList() : (
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center', padding: '20px 0' }}>
                 No BMS file loaded.
               </div>
@@ -370,6 +474,16 @@ export const RightSidebar = ({
           </div>
         )}
       </div>
+      
+      {bmsData && editingMeasureIndex !== null && (
+        <MeasureLengthModal
+          isOpen={true}
+          measure={editingMeasureIndex}
+          currentLength={bmsData.measureLengths[editingMeasureIndex] ?? 1}
+          onClose={() => setEditingMeasureIndex(null)}
+          onApply={(m, l) => updateMeasureLength(m, l)}
+        />
+      )}
     </aside>
   );
 };

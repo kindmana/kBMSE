@@ -119,6 +119,18 @@ body, html, #root {
   border-left: 1px solid var(--glass-border);
 }
 
+.resizer {
+  width: 5px;
+  background-color: transparent;
+  cursor: col-resize;
+  z-index: 10;
+  transition: background-color 0.2s;
+}
+
+.resizer:hover, .resizer:active {
+  background-color: var(--accent-color);
+}
+
 .panel-title {
   font-size: 0.8rem;
   text-transform: uppercase;
