@@ -29,7 +29,7 @@ function App() {
     fileName, setFileName,
     fileHandle, setFileHandle,
     historyIndex, lastSavedHistoryIndex, setLastSaved,
-    updateHeader
+    updateHeader, updateWav, updateBmp
   } = useEditorStore();
 
   const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
@@ -205,6 +205,9 @@ function App() {
 
   const longNotePairsRef = useRef(longNotePairs);
   longNotePairsRef.current = longNotePairs;
+
+  const currentNoteValueRef = useRef(currentNoteValue);
+  currentNoteValueRef.current = currentNoteValue;
 
   const drawGridAndNotes = () => {
     try {
@@ -389,6 +392,45 @@ function App() {
         });
       }
 
+      // 4. Draw Ghost Note
+      const currentActiveTool = activeToolRef.current;
+      const hoverPos = hoverBmsPos.current;
+      if (currentActiveTool === 'write' && hoverPos) {
+        const measureLen = currentBmsData?.measureLengths[hoverPos.measure] ?? 1;
+        const y = -(currentMeasureOffsets.offsets[hoverPos.measure] + hoverPos.position * measureLen) * currentMeasureHeight;
+        
+        let laneX = 50;
+        let found = false;
+        let lWidth = 0;
+        for (const lane of zoomedLayout) {
+          if (lane.name === hoverPos.lane.name) {
+            found = true;
+            lWidth = lane.width;
+            break;
+          }
+          laneX += lane.width;
+        }
+
+        if (found) {
+          const noteHeight = 12;
+          const noteY = y - noteHeight;
+          ctx.globalAlpha = 0.5;
+          ctx.fillStyle = '#ffaaaa';
+          ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
+          ctx.strokeStyle = '#ff0000';
+          ctx.strokeRect(laneX + 1, noteY, lWidth - 2, noteHeight);
+          ctx.globalAlpha = 1.0;
+          
+          // Draw the current note value on the ghost note
+          const currentNoteVal = currentNoteValueRef.current;
+          let displayText = encodeBmsValue(currentNoteVal, currentUseBase62);
+          ctx.fillStyle = '#000000';
+          ctx.font = '10px Inter';
+          ctx.textAlign = 'center';
+          ctx.fillText(displayText, laneX + lWidth / 2, noteY + 10);
+        }
+      }
+
       // Draw Selection Box
       if (isSelectingBox.current && selectionBoxStart.current && selectionBoxCurrent.current) {
         // Temporarily reset transform to screen coords to draw the selection box
@@ -550,6 +592,8 @@ function App() {
   const isSelectingBox = useRef(false);
   const selectionBoxStart = useRef<{ x: number, y: number } | null>(null);
   const selectionBoxCurrent = useRef<{ x: number, y: number } | null>(null);
+  
+  const hoverBmsPos = useRef<{ measure: number, position: number, lane: any } | null>(null);
   
   // To track offsets for dragging multiple notes
   const dragStartBmsPos = useRef<{ measure: number, position: number, channel: number, index: number } | null>(null);
@@ -1245,11 +1289,44 @@ function App() {
   />
 
   <main className="canvas-container" ref={containerRef}>
-    <canvas ref={canvasRef} onMouseDown={handleCanvasMouseDown} />
+    <canvas 
+      ref={canvasRef} 
+      onMouseDown={handleCanvasMouseDown} 
+      onMouseMove={(e) => {
+        const rect = canvasRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        if (activeToolRef.current === 'write') {
+          const pos = getBmsPosition(x, y);
+          hoverBmsPos.current = pos;
+          if (canvasRef.current) {
+            canvasRef.current.style.cursor = pos ? 'none' : 'crosshair';
+          }
+          requestRender();
+        } else {
+          hoverBmsPos.current = null;
+          if (canvasRef.current) {
+            canvasRef.current.style.cursor = 'crosshair';
+          }
+          requestRender();
+        }
+      }}
+      onMouseLeave={() => {
+        hoverBmsPos.current = null;
+        if (canvasRef.current) {
+          canvasRef.current.style.cursor = 'crosshair';
+        }
+        requestRender();
+      }}
+      style={{ cursor: 'crosshair' }}
+    />
   </main>
 
   <RightSidebar 
     bmsData={bmsData} updateHeader={updateHeader} 
+    updateWav={updateWav} updateBmp={updateBmp} useBase62={useBase62}
     gridSnap={gridSnap} setGridSnap={setGridSnap} 
     zoomX={zoomX} setZoomX={setZoomX} 
     zoomY={zoomY} setZoomY={setZoomY} 

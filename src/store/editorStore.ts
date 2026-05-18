@@ -27,6 +27,8 @@ interface EditorState {
   bmsData: BmsData | null;
   setBmsData: (data: BmsData | null) => void;
   updateHeader: (updates: Partial<BmsData['header']>) => void;
+  updateWav: (index: number, filename: string) => void;
+  updateBmp: (index: number, filename: string) => void;
   rawBmsContent: string | null;
   setRawBmsContent: (content: string | null) => void;
 
@@ -89,6 +91,26 @@ export const useEditorStore = create<EditorState>((set) => ({
       bmsData: {
         ...state.bmsData,
         header: { ...state.bmsData.header, ...updates }
+      }
+    };
+  }),
+
+  updateWav: (index, filename) => set((state) => {
+    if (!state.bmsData) return state;
+    return {
+      bmsData: {
+        ...state.bmsData,
+        wavs: { ...state.bmsData.wavs, [index]: filename }
+      }
+    };
+  }),
+
+  updateBmp: (index, filename) => set((state) => {
+    if (!state.bmsData) return state;
+    return {
+      bmsData: {
+        ...state.bmsData,
+        bmps: { ...state.bmsData.bmps, [index]: filename }
       }
     };
   }),
