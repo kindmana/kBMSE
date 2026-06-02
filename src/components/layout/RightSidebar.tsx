@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
-import { FileCode2, ZoomIn, ChevronDown, ChevronRight, Music, Image, Monitor } from 'lucide-react';
+import { FileCode2, ChevronDown, ChevronRight, Music, Image, Monitor } from 'lucide-react';
 import { BmsData, encodeBmsValue } from '../../parser/bmsParser';
-import { TextInput, NumberInput, SelectInput, FileInput, LnObjInput } from '../ui/PropertyInputs';
+import { TextInput, TextAreaInput, NumberInput, SelectInput, FileInput, LnObjInput } from '../ui/PropertyInputs';
 import { useEditorStore } from '../../store/editorStore';
 import { MeasureLengthModal } from '../ui/MeasureLengthModal';
+import { getAudioContext, playSoloSound, findAudioBuffer } from '../../utils/audioPlayer';
 
 interface RightSidebarProps {
   bmsData: BmsData | null;
@@ -19,6 +20,14 @@ interface RightSidebarProps {
   setZoomY: (zoom: number) => void;
 }
 
+const KNOWN_HEADER_KEYS = [
+  "title", "subtitle", "artist", "subartist", "genre", "bpm", 
+  "player", "rank", "playlevel", "difficulty", "total", 
+  "lnmode", "lnobj", "defexrank", "comment",
+  "stagefile", "banner", "backbmp", "wav00", "bmp00", "preview"
+];
+
+
 export const RightSidebar = ({
   bmsData,
   updateHeader,
@@ -32,10 +41,140 @@ export const RightSidebar = ({
   zoomY,
   setZoomY
 }: RightSidebarProps) => {
-  const { currentNoteValue, setCurrentNoteValue, updateMeasureLength } = useEditorStore();
+  const { 
+    currentNoteValue, 
+    setCurrentNoteValue, 
+    updateMeasureLength, 
+    auxGridSnap, 
+    setAuxGridSnap,
+    settings,
+    updateExpansion
+  } = useEditorStore();
+
+  const lang = settings.language || 'en';
+
+  const getRightSidebarTexts = () => {
+    if (lang === 'ko') {
+      return {
+        headerInfo: '헤더 정보',
+        keysoundBgaList: '키음 / BGA 리스트',
+        measureLength: '마디 길이 설정',
+        displaySettings: '격자 설정',
+        gridSnap: '격자 박자',
+        auxGridSnap: '보조 격자 박자',
+        zoom: '배율',
+        horizontal: '가로 배율 (X)',
+        vertical: '세로 배율 (Y)',
+        noBms: '로드된 BMS 파일이 없습니다.',
+        keySoundTab: '키음',
+        bgaTab: 'BGA',
+        expansionCode: '확장 명령',
+        expansionPlaceholder: '#VOLWAV 100\n#PATH_WAV "../"\n#BGA 01-00-0-0-0-0',
+        expansionHelp: '#명령어 값 형태로 한 줄씩 기입하세요.'
+      };
+    }
+    if (lang === 'ja') {
+      return {
+        headerInfo: 'ヘッダー情報',
+        keysoundBgaList: 'キー音 / BGA リスト',
+        measureLength: '小節長設定',
+        displaySettings: 'グリッド設定',
+        gridSnap: 'グリッドスナップ',
+        auxGridSnap: '補助グリッドスナップ',
+        zoom: '倍率',
+        horizontal: '横倍率 (X)',
+        vertical: '縦倍率 (Y)',
+        noBms: '読み込まれたBMSファイルがありません。',
+        keySoundTab: 'キー音',
+        bgaTab: 'BGA',
+        expansionCode: '拡張命令',
+        expansionPlaceholder: '#VOLWAV 100\n#PATH_WAV "../"\n#BGA 01-00-0-0-0-0',
+        expansionHelp: '#命令 値 の形式で一行ずつ入力してください。'
+      };
+    }
+    return {
+      headerInfo: 'Header Info',
+      keysoundBgaList: 'Key Sound / BGA List',
+      measureLength: 'Measure Length',
+      displaySettings: 'Grid Settings',
+      gridSnap: 'Grid Snap',
+      auxGridSnap: 'Aux Grid Snap',
+      zoom: 'Zoom',
+      horizontal: 'Horizontal (X)',
+      vertical: 'Vertical (Y)',
+      noBms: 'No BMS file loaded.',
+      keySoundTab: 'Key Sound',
+      bgaTab: 'BGA',
+      expansionCode: 'Expansion Code',
+      expansionPlaceholder: '#VOLWAV 100\n#PATH_WAV "../"\n#BGA 01-00-0-0-0-0',
+      expansionHelp: 'Enter one command per line in the format "#COMMAND VALUE".'
+    };
+  };
+
+  const getHeaderLabels = () => {
+    if (lang === 'ko') {
+      return {
+        title: '곡 제목 (TITLE)',
+        subtitle: '부제목 (SUBTITLE)',
+        artist: '아티스트 (ARTIST)',
+        subartist: '공동 아티스트 (SUBARTIST)',
+        genre: '장르 (GENRE)',
+        bpm: '기본 템포 (BPM)',
+        player: '플레이 모드 (PLAYER)',
+        rank: '판정 난이도 (RANK)',
+        playlevel: '레벨 (PLAYLEVEL)',
+        difficulty: '난이도 (DIFFICULTY)',
+        total: '게이지 총량 (TOTAL)',
+        lnmode: '롱노트 모드 (LNMODE)',
+        lnobj: '롱노트 채널 (LNOBJ)',
+        defexrank: '확장 판정 (DEFEXRANK)',
+        comment: '코멘트 (COMMENT)'
+      };
+    }
+    if (lang === 'ja') {
+      return {
+        title: 'タイトル (TITLE)',
+        subtitle: 'サブタイトル (SUBTITLE)',
+        artist: 'アーティスト (ARTIST)',
+        subartist: 'サブアーティスト (SUBARTIST)',
+        genre: 'ジャンル (GENRE)',
+        bpm: 'テンポ (BPM)',
+        player: 'プレイモード (PLAYER)',
+        rank: '判定難易度 (RANK)',
+        playlevel: 'レベル (PLAYLEVEL)',
+        difficulty: '難易度 (DIFFICULTY)',
+        total: '演奏トータル値 (TOTAL)',
+        lnmode: 'ロングノートモード (LNMODE)',
+        lnobj: 'ロングノート終端 (LNOBJ)',
+        defexrank: '拡張判定 (DEFEXRANK)',
+        comment: 'コメント (COMMENT)'
+      };
+    }
+    return {
+      title: 'TITLE',
+      subtitle: 'SUBTITLE',
+      artist: 'ARTIST',
+      subartist: 'SUBARTIST',
+      genre: 'GENRE',
+      bpm: 'BPM',
+      player: 'PLAYER',
+      rank: 'JUDGE RANK (RANK)',
+      playlevel: 'LEVEL (PLAYLEVEL)',
+      difficulty: 'DIFFICULTY',
+      total: 'TOTAL',
+      lnmode: 'LNMODE',
+      lnobj: 'LNOBJ',
+      defexrank: 'DEFEXRANK',
+      comment: 'COMMENT'
+    };
+  };
+
+  const rTxt = getRightSidebarTexts();
+  const hLabels = getHeaderLabels();
 
   const [openSections, setOpenSections] = useState({
     header: true,
+    expansion: true,
     wavbmp: true,
     measure: true,
     display: true
@@ -49,6 +188,50 @@ export const RightSidebar = ({
   
   const [maxVisibleMeasure, setMaxVisibleMeasure] = useState(100);
   const [editingMeasureIndex, setEditingMeasureIndex] = useState<number | null>(null);
+
+  const [expansionText, setExpansionText] = useState('');
+  const isExpansionFocused = useRef(false);
+
+  useEffect(() => {
+    if (bmsData && !isExpansionFocused.current) {
+      setExpansionText(bmsData.expansion || '');
+    } else if (!bmsData) {
+      setExpansionText('');
+    }
+  }, [bmsData?.expansion]);
+
+  const handleExpansionCodeChange = (text: string) => {
+    if (!bmsData) return;
+
+    // 1. Update the expansion text in the store so it persists on save
+    updateExpansion(text);
+
+    // 2. Parse and append custom expansion tags to bmsData.header for editor reactivity
+    const newHeader: Record<string, any> = {};
+    for (const key in bmsData.header) {
+      if (KNOWN_HEADER_KEYS.includes(key.toLowerCase())) {
+        newHeader[key] = bmsData.header[key];
+      }
+    }
+
+    const lines = text.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('#')) continue;
+
+      const match = trimmed.match(/^#([A-Z0-9_-]+)\s+(.+)$/i);
+      if (match) {
+        const key = match[1].toUpperCase();
+        const val = match[2];
+
+        if (!KNOWN_HEADER_KEYS.includes(key.toLowerCase())) {
+          newHeader[key] = val;
+        }
+      }
+    }
+
+    updateHeader(newHeader);
+  };
 
   // Initialize maxVisibleMeasure based on used measures
   useEffect(() => {
@@ -76,6 +259,62 @@ export const RightSidebar = ({
 
   const handleWavClick = (index: number) => {
     setCurrentNoteValue(index);
+    if (bmsData) {
+      const filename = bmsData.wavs[index];
+      if (filename) {
+        const currentBuffers = useEditorStore.getState().audioBuffers;
+        const buffer = findAudioBuffer(filename, currentBuffers);
+        if (buffer) {
+          const actx = getAudioContext();
+          if (actx.state === 'suspended') {
+            actx.resume().catch(err => console.error(err));
+          }
+          playSoloSound(buffer, actx.currentTime);
+        } else {
+          // [Lazy Load]: 버퍼 캐시에 없으면 비동기로 Tauri에서 즉시 읽어 디코딩 후 재생
+          const isTauri = 
+            typeof (window as any).__TAURI_METADATA__ !== 'undefined' || 
+            typeof (window as any).__TAURI__ !== 'undefined' || 
+            typeof (window as any).__TAURI_INTERNALS__ !== 'undefined' ||
+            typeof (window as any).__tauri_ipc__ !== 'undefined';
+            
+          if (isTauri) {
+            const lastDir = localStorage.getItem('kBMSE_last_opened_dir');
+            if (lastDir) {
+              const separator = lastDir.includes('\\') ? '\\' : '/';
+              const fullPath = lastDir.endsWith(separator) ? `${lastDir}${filename}` : `${lastDir}${separator}${filename}`;
+              
+              (async () => {
+                try {
+                  const { invoke } = await import('@tauri-apps/api/core');
+                  const arrayBuffer = await invoke<ArrayBuffer>('read_local_file', { path: fullPath });
+                  
+                  const actx = getAudioContext();
+                  const decoded = await actx.decodeAudioData(arrayBuffer);
+                  
+                  // 캐시에 등록
+                  useEditorStore.setState({
+                    audioBuffers: {
+                      ...currentBuffers,
+                      [filename.toLowerCase()]: decoded
+                    }
+                  });
+                  
+                  // 즉시 재생
+                  if (actx.state === 'suspended') {
+                    await actx.resume();
+                  }
+                  playSoloSound(decoded, actx.currentTime);
+                  console.log(`[TauriLazyAudio] Lazy loaded and played keysound: ${filename}`);
+                } catch (e) {
+                  console.error(`[TauriLazyAudio] Failed to lazy load audio: ${filename}`, e);
+                }
+              })();
+            }
+          }
+        }
+      }
+    }
   };
 
   const handleWavDoubleClick = (index: number) => {
@@ -154,13 +393,13 @@ export const RightSidebar = ({
             style={{ flex: 1, padding: '5px', background: isWav ? 'var(--bg-secondary)' : 'transparent', color: isWav ? 'var(--text-primary)' : 'var(--text-secondary)', border: 'none', cursor: 'pointer', fontSize: '0.85rem' }}
             onClick={() => setActiveTab('wav')}
           >
-            <Music size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> WAV
+            <Music size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> {rTxt.keySoundTab}
           </button>
           <button 
             style={{ flex: 1, padding: '5px', background: !isWav ? 'var(--bg-secondary)' : 'transparent', color: !isWav ? 'var(--text-primary)' : 'var(--text-secondary)', border: 'none', cursor: 'pointer', fontSize: '0.85rem' }}
             onClick={() => setActiveTab('bmp')}
           >
-            <Image size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> BMP
+            <Image size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> {rTxt.bgaTab}
           </button>
         </div>
         <div style={{ overflowY: 'auto', flex: 1, userSelect: 'none' }}>
@@ -257,52 +496,59 @@ export const RightSidebar = ({
 
       {/* Header Info Section */}
       <div style={{ display: 'flex', flexDirection: 'column', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
-        <AccordionHeader title="Header Info" section="header" />
+        <AccordionHeader title={rTxt.headerInfo} section="header" />
         
         {openSections.header && (
           <div style={{ marginTop: '10px' }}>
             {bmsData ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <TextInput label="TITLE" value={bmsData.header.title} onChange={(val: string) => updateHeader({ title: val })} />
-                <TextInput label="SUBTITLE" value={bmsData.header.subtitle} onChange={(val: string) => updateHeader({ subtitle: val })} />
-                <TextInput label="ARTIST" value={bmsData.header.artist} onChange={(val: string) => updateHeader({ artist: val })} />
-                <TextInput label="SUBARTIST" value={bmsData.header.subartist} onChange={(val: string) => updateHeader({ subartist: val })} />
-                <TextInput label="GENRE" value={bmsData.header.genre} onChange={(val: string) => updateHeader({ genre: val })} />
+                <TextInput label={hLabels.title} value={bmsData.header.title} onChange={(val: string) => updateHeader({ title: val })} />
+                <TextInput label={hLabels.subtitle} value={bmsData.header.subtitle} onChange={(val: string) => updateHeader({ subtitle: val })} />
+                <TextInput label={hLabels.artist} value={bmsData.header.artist} onChange={(val: string) => updateHeader({ artist: val })} />
+                <TextInput label={hLabels.subartist} value={bmsData.header.subartist} onChange={(val: string) => updateHeader({ subartist: val })} />
+                <TextInput label={hLabels.genre} value={bmsData.header.genre} onChange={(val: string) => updateHeader({ genre: val })} />
                 
-                <NumberInput label="BPM" value={bmsData.header.bpm} isFloat={true} onChange={(val: number) => updateHeader({ bpm: val })} />
+                <NumberInput label={hLabels.bpm} value={bmsData.header.bpm} isFloat={true} onChange={(val: number) => updateHeader({ bpm: val })} />
                 
-                <SelectInput label="PLAYER" value={bmsData.header.player} onChange={(val: number) => updateHeader({ player: val })} options={[
-                  { value: 1, label: '1 - Single Play' },
-                  { value: 2, label: '2 - Couple Play' },
-                  { value: 3, label: '3 - Double Play' }
+                <SelectInput label={hLabels.player} value={bmsData.header.player} onChange={(val: number) => updateHeader({ player: val })} options={[
+                  { value: 1, label: lang === 'ko' ? '1 - 싱글 플레이' : (lang === 'ja' ? '1 - シングルプレイ' : '1 - Single Play') },
+                  { value: 2, label: lang === 'ko' ? '2 - 커플 플레이' : (lang === 'ja' ? '2 - カップルプレイ' : '2 - Couple Play') },
+                  { value: 3, label: lang === 'ko' ? '3 - 더블 플레이' : (lang === 'ja' ? '3 - ダブルプレイ' : '3 - Double Play') }
                 ]} />
                 
-                <SelectInput label="RANK" value={bmsData.header.rank} onChange={(val: number) => updateHeader({ rank: val })} options={[
-                  { value: 0, label: '0 - Very Hard' },
-                  { value: 1, label: '1 - Hard' },
+                <SelectInput label={hLabels.rank} value={bmsData.header.rank} onChange={(val: number) => updateHeader({ rank: val })} options={[
+                  { value: 0, label: lang === 'ko' ? '0 - 매우 어려움 (Very Hard)' : (lang === 'ja' ? '0 - 非常に厳しい (Very Hard)' : '0 - Very Hard') },
+                  { value: 1, label: lang === 'ko' ? '1 - 어려움 (Hard)' : (lang === 'ja' ? '1 - 厳しい (Hard)' : '1 - Hard') },
+                  { value: 2, label: lang === 'ko' ? '2 - 보통 (Normal)' : (lang === 'ja' ? '2 - 普通 (Normal)' : '2 - Normal') },
+                  { value: 3, label: lang === 'ko' ? '3 - 쉬움 (Easy)' : (lang === 'ja' ? '3 - 易しい (Easy)' : '3 - Easy') },
+                  { value: 4, label: lang === 'ko' ? '4 - 매우 쉬움 (Very Easy)' : (lang === 'ja' ? '4 - 非常に易しい (Very Easy)' : '4 - Very Easy') }
+                ]} />
+                
+                <TextInput label={hLabels.playlevel} value={bmsData.header.playLevel} onChange={(val: string) => updateHeader({ playLevel: val })} />
+                
+                <SelectInput label={hLabels.difficulty} value={bmsData.header.difficulty} onChange={(val: number) => updateHeader({ difficulty: val })} options={[
+                  { value: 0, label: '0 - None' },
+                  { value: 1, label: '1 - Beginner' },
                   { value: 2, label: '2 - Normal' },
-                  { value: 3, label: '3 - Easy' },
-                  { value: 4, label: '4 - Very Easy' }
+                  { value: 3, label: '3 - Hyper' },
+                  { value: 4, label: '4 - Another' },
+                  { value: 5, label: '5 - Legendaria' }
                 ]} />
                 
-                <TextInput label="PLAYLEVEL" value={bmsData.header.playLevel} onChange={(val: string) => updateHeader({ playLevel: val })} />
+                <NumberInput label={hLabels.total} value={bmsData.header.total} isFloat={true} onChange={(val: number) => updateHeader({ total: val })} />
                 
-                <NumberInput label="DIFFICULTY" value={bmsData.header.difficulty} min={0} max={5} onChange={(val: number) => updateHeader({ difficulty: val })} />
-                
-                <NumberInput label="TOTAL" value={bmsData.header.total} isFloat={true} onChange={(val: number) => updateHeader({ total: val })} />
-                
-                <SelectInput label="LNMODE" value={bmsData.header.lnmode ?? ''} onChange={(val: number | undefined) => updateHeader({ lnmode: val })} options={[
-                  { value: '', label: 'None' },
+                <SelectInput label={hLabels.lnmode} value={bmsData.header.lnmode ?? ''} onChange={(val: number | undefined) => updateHeader({ lnmode: val })} options={[
+                  { value: '', label: lang === 'ko' ? '없음' : (lang === 'ja' ? 'なし' : 'None') },
                   { value: 1, label: '1 - LN' },
                   { value: 2, label: '2 - CN' },
                   { value: 3, label: '3 - HCN' }
                 ]} />
                 
-                <LnObjInput label="LNOBJ" value={bmsData.header.lnobj} onChange={(val: string) => updateHeader({ lnobj: val })} />
+                <LnObjInput label={hLabels.lnobj} value={bmsData.header.lnobj} onChange={(val: string) => updateHeader({ lnobj: val })} />
                 
-                <NumberInput label="DEFEXRANK" value={bmsData.header.defexrank} isFloat={true} onChange={(val: number) => updateHeader({ defexrank: val })} />
+                <NumberInput label={hLabels.defexrank} value={bmsData.header.defexrank} isFloat={true} onChange={(val: number) => updateHeader({ defexrank: val })} />
                 
-                <TextInput label="COMMENT" value={bmsData.header.comment} onChange={(val: string) => updateHeader({ comment: val })} />
+                <TextAreaInput label={hLabels.comment} value={bmsData.header.comment} onChange={(val: string) => updateHeader({ comment: val })} rows={2} />
                 
                 <div className="dropdown-divider" style={{ margin: '5px 0' }}></div>
                 
@@ -316,7 +562,51 @@ export const RightSidebar = ({
             ) : (
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', textAlign: 'center', marginTop: '10px' }}>
                 <FileCode2 size={32} style={{ opacity: 0.5, margin: '0 auto 10px' }} />
-                <p>No BMS file loaded.</p>
+                <p>{rTxt.noBms}</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Expansion Code (확장 명령) Section */}
+      <div style={{ display: 'flex', flexDirection: 'column', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
+        <AccordionHeader title={rTxt.expansionCode} section="expansion" />
+        {openSections.expansion && (
+          <div style={{ marginTop: '10px' }}>
+            {bmsData ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <textarea
+                  value={expansionText}
+                  onChange={(e) => setExpansionText(e.target.value)}
+                  onFocus={() => { isExpansionFocused.current = true; }}
+                  onBlur={() => { 
+                    isExpansionFocused.current = false; 
+                    handleExpansionCodeChange(expansionText); 
+                  }}
+                  placeholder={rTxt.expansionPlaceholder}
+                  style={{
+                    width: '100%',
+                    height: '110px',
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border-color)',
+                    color: 'var(--text-primary)',
+                    borderRadius: '4px',
+                    padding: '8px',
+                    fontSize: '0.8rem',
+                    fontFamily: 'monospace',
+                    resize: 'vertical',
+                    outline: 'none',
+                    lineHeight: '1.4'
+                  }}
+                />
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                  {rTxt.expansionHelp}
+                </span>
+              </div>
+            ) : (
+              <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center', padding: '20px 0' }}>
+                {rTxt.noBms}
               </div>
             )}
           </div>
@@ -325,12 +615,12 @@ export const RightSidebar = ({
 
       {/* WAV / BMP List Section */}
       <div style={{ display: 'flex', flexDirection: 'column', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
-        <AccordionHeader title="WAV / BMP List" section="wavbmp" />
+        <AccordionHeader title={rTxt.keysoundBgaList} section="wavbmp" />
         {openSections.wavbmp && (
           <div style={{ marginTop: '10px' }}>
             {bmsData ? renderWavBmpList() : (
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center', padding: '20px 0' }}>
-                No BMS file loaded.
+                {rTxt.noBms}
               </div>
             )}
           </div>
@@ -339,12 +629,12 @@ export const RightSidebar = ({
 
       {/* Measure Length List Section */}
       <div style={{ display: 'flex', flexDirection: 'column', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
-        <AccordionHeader title="Measure Length" section="measure" />
+        <AccordionHeader title={rTxt.measureLength} section="measure" />
         {openSections.measure && (
           <div style={{ marginTop: '10px' }}>
             {bmsData ? renderMeasureList() : (
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center', padding: '20px 0' }}>
-                No BMS file loaded.
+                {rTxt.noBms}
               </div>
             )}
           </div>
@@ -353,14 +643,14 @@ export const RightSidebar = ({
 
       {/* Display Section (Grid Snap & Zoom) */}
       <div style={{ display: 'flex', flexDirection: 'column', paddingBottom: '10px' }}>
-        <AccordionHeader title="Display Settings" section="display" icon={<Monitor size={14} />} />
+        <AccordionHeader title={rTxt.displaySettings} section="display" />
         {openSections.display && (
           <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
             
             {/* Grid Snap Sub-section */}
             <div>
               <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                Grid Snap
+                {rTxt.gridSnap}
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem' }}>
@@ -401,15 +691,59 @@ export const RightSidebar = ({
               </div>
             </div>
 
+            {/* Aux Grid Snap Sub-section */}
+            <div>
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                {rTxt.auxGridSnap}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem' }}>
+                  <span>1/</span>
+                  <input 
+                    type="number"
+                    defaultValue={auxGridSnap}
+                    key={`auxsnap-${auxGridSnap}`}
+                    onBlur={(e) => {
+                      let val = parseInt(e.target.value);
+                      if (isNaN(val)) val = auxGridSnap;
+                      if (val < 1) val = 1;
+                      if (val > 10000) val = 10000;
+                      setAuxGridSnap(val);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.currentTarget.blur();
+                    }}
+                    style={{ width: '55px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '2px 4px', fontSize: '0.85rem' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: '5px' }}>
+                  <button 
+                    className="tool-button" 
+                    style={{ padding: '2px 8px', minWidth: '30px', justifyContent: 'center' }}
+                    onClick={() => setAuxGridSnap(Math.max(1, Math.floor(auxGridSnap / 2)))}
+                  >
+                    -
+                  </button>
+                  <button 
+                    className="tool-button" 
+                    style={{ padding: '2px 8px', minWidth: '30px', justifyContent: 'center' }}
+                    onClick={() => setAuxGridSnap(Math.min(10000, auxGridSnap * 2))}
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+            </div>
+
             {/* Zoom Sub-section */}
             <div>
               <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <ZoomIn size={14} /> Zoom
+                <Monitor size={14} style={{ display: 'none' }} /> {rTxt.zoom}
               </div>
               
               <div style={{ marginBottom: '10px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-                  <span>Horizontal (X)</span>
+                  <span>{rTxt.horizontal}</span>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
                     <input 
                       type="number"
@@ -441,7 +775,7 @@ export const RightSidebar = ({
 
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-                  <span>Vertical (Y)</span>
+                  <span>{rTxt.vertical}</span>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
                     <input 
                       type="number"

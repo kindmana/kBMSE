@@ -36,6 +36,7 @@ const getHandleFromDB = async (id: string): Promise<FileSystemFileHandle | undef
 export interface RecentFile {
   id: string;
   name: string;
+  path?: string;
 }
 
 export const getRecentFiles = (): RecentFile[] => {
@@ -48,15 +49,32 @@ export const getRecentFiles = (): RecentFile[] => {
   return [];
 };
 
-export const addRecentFile = async (handle: FileSystemFileHandle) => {
-  const id = handle.name + '_' + Date.now();
-  await saveHandleToDB(id, handle);
-  
+export const addRecentFile = async (handleOrPath: FileSystemFileHandle | string) => {
+  let id = '';
+  let name = '';
+  let path: string | undefined = undefined;
+
+  if (typeof handleOrPath === 'string') {
+    path = handleOrPath;
+    name = handleOrPath.split(/[/\\]/).pop() || handleOrPath;
+    id = name + '_' + Date.now();
+  } else {
+    const handle = handleOrPath;
+    name = handle.name;
+    id = name + '_' + Date.now();
+    await saveHandleToDB(id, handle);
+  }
+
   let recents = getRecentFiles();
-  // Remove existing entries with the same name
-  recents = recents.filter(r => r.name !== handle.name);
   
-  recents.unshift({ id, name: handle.name });
+  // Remove existing entries with the same path or same name (differentiating web/tauri entries)
+  if (path) {
+    recents = recents.filter(r => r.path !== path);
+  } else {
+    recents = recents.filter(r => r.path || r.name !== name);
+  }
+  
+  recents.unshift({ id, name, path });
   
   // Keep only the top 5
   if (recents.length > 5) {

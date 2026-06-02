@@ -20,6 +20,12 @@ export const getTargetLaneIndex = (layout: LaneConfig[], channel: number, bgmInd
   if (channel >= 0x51 && channel <= 0x59) targetChannel = channel - 0x40; // 0x51 -> 0x11
   if (channel >= 0x61 && channel <= 0x69) targetChannel = channel - 0x40; // 0x61 -> 0x21
   
+  if (channel >= 0x31 && channel <= 0x39) targetChannel = channel - 0x20; // 0x31 -> 0x11 (1P Invisible)
+  if (channel >= 0x41 && channel <= 0x49) targetChannel = channel - 0x20; // 0x41 -> 0x21 (2P Invisible)
+  
+  if (channel >= 0xD1 && channel <= 0xD9) targetChannel = channel - 0xC0; // 0xD1 -> 0x11 (1P Mine)
+  if (channel >= 0xE1 && channel <= 0xE9) targetChannel = channel - 0xC0; // 0xE1 -> 0x21 (2P Mine)
+  
   return layout.findIndex(l => l.channel === targetChannel);
 };
 
@@ -28,6 +34,10 @@ export const getLaneCategory = (channel: number) => {
   if (channel >= 0x21 && channel <= 0x29) return '2P';
   if (channel >= 0x51 && channel <= 0x59) return '1P_LN';
   if (channel >= 0x61 && channel <= 0x69) return '2P_LN';
+  if (channel >= 0x31 && channel <= 0x39) return '1P_INV';
+  if (channel >= 0x41 && channel <= 0x49) return '2P_INV';
+  if (channel >= 0xD1 && channel <= 0xD9) return '1P_MINE';
+  if (channel >= 0xE1 && channel <= 0xE9) return '2P_MINE';
   if (channel === 0x01) return 'BGM';
   return 'other';
 };
@@ -72,3 +82,24 @@ export const LAYOUT: LaneConfig[] = [
 ];
 
 export const BASE_MEASURE_HEIGHT = 192;
+
+export type KeyMode = '7K1S' | '14K2S' | '4K' | '5K' | '5K1S' | '6K' | '8K' | '9K' | '10K' | '10K2S';
+
+export const HIDDEN_LANES: Record<KeyMode, string[]> = {
+  '4K': ['S1', 'A3', 'A6', 'A7', 'D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'S2'],
+  '5K': ['S1', 'A6', 'A7', 'D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'S2'],
+  '5K1S': ['A6', 'A7', 'D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'S2'],
+  '6K': ['S1', 'A4', 'D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'S2'],
+  '7K1S': ['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'S2'],
+  '8K': ['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'S2'],
+  '9K': ['S1', 'A6', 'A7', 'D1', 'D6', 'D7', 'S2'],
+  '10K': ['S1', 'A6', 'A7', 'D6', 'D7', 'S2'],
+  '10K2S': ['A6', 'A7', 'D6', 'D7'],
+  '14K2S': []
+};
+
+export const getFilteredLayout = (keyMode: KeyMode, layout: LaneConfig[]): LaneConfig[] => {
+  if (keyMode === '14K2S') return layout;
+  const hidden = HIDDEN_LANES[keyMode] || [];
+  return layout.filter(l => !hidden.includes(l.name));
+};

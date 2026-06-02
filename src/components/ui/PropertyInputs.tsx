@@ -13,6 +13,31 @@ export const TextInput = ({ label, value, onChange }: any) => (
   </div>
 );
 
+export const TextAreaInput = ({ label, value, onChange, rows = 2 }: any) => (
+  <div className="property-item" style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'stretch' }}>
+    <span className="property-label" style={{ marginBottom: '2px' }}>{label}</span>
+    <textarea 
+      rows={rows}
+      className="property-value" 
+      style={{ 
+        background: 'var(--bg-secondary)', 
+        color: 'var(--text-primary)', 
+        border: '1px solid var(--border-color)', 
+        borderRadius: '4px', 
+        padding: '6px 8px', 
+        fontSize: '0.9rem', 
+        outline: 'none',
+        fontFamily: 'inherit',
+        resize: 'vertical',
+        width: '100%'
+      }}
+      value={value || ''} 
+      onChange={(e) => onChange(e.target.value)} 
+    />
+  </div>
+);
+
+
 export const NumberInput = ({ label, value, onChange, isFloat = false, min, max }: any) => (
   <div className="property-item">
     <span className="property-label">{label}</span>

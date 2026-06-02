@@ -61,7 +61,7 @@ body, html, #root {
   align-items: center;
   padding: 0 20px;
   gap: 20px;
-  z-index: 10;
+  z-index: 50;
 }
 
 .topbar-logo {
@@ -224,13 +224,12 @@ canvas {
   top: 100%;
   left: 0;
   margin-top: 10px;
-  background: rgba(20, 20, 22, 0.95);
-  backdrop-filter: blur(12px);
+  background: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   min-width: 200px;
   padding: 8px 0;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
   z-index: 100;
 }
 
@@ -239,7 +238,7 @@ canvas {
   font-size: 0.9rem;
   color: var(--text-primary);
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background 0.2s, color 0.2s;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -248,6 +247,7 @@ canvas {
 
 .dropdown-item:hover:not(.disabled) {
   background: var(--accent-color);
+  color: #ffffff !important;
 }
 
 .dropdown-item.disabled {
@@ -260,4 +260,196 @@ canvas {
   height: 1px;
   background: var(--border-color);
   margin: 4px 0;
+}
+
+/* Light Theme Dropdown Override */
+.theme-light .dropdown-menu {
+  background: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.1) !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1) !important;
+}
+
+.theme-light .dropdown-item {
+  color: #18181b !important;
+}
+
+.theme-light .dropdown-item:hover:not(.disabled) {
+  background: var(--accent-color) !important;
+  color: #ffffff !important;
+}
+
+.theme-light .dropdown-divider {
+  background: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* ==========================================================================
+   Discord Nitro-like Gradient Themes (Applied to topbar, sidebar, right-panel, modal-content)
+   ========================================================================== */
+
+/* 1. Light Mode */
+.theme-light {
+  --bg-primary: #f8f8f9;
+  --bg-secondary: rgba(244, 244, 245, 0.85);
+  --bg-tertiary: rgba(228, 228, 231, 0.7);
+  --text-primary: #18181b;
+  --text-secondary: #71717a;
+  --accent-color: #4f46e5;
+  --accent-hover: #4338ca;
+  --border-color: rgba(0, 0, 0, 0.08);
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(0, 0, 0, 0.06);
+}
+
+/* 2. Cyberpunk Mode */
+.theme-cyberpunk {
+  --bg-primary: #0a0216;
+  --bg-secondary: rgba(26, 8, 44, 0.85);
+  --bg-tertiary: rgba(57, 9, 87, 0.6);
+  --text-primary: #39ff14;
+  --text-secondary: #00f0ff;
+  --accent-color: #ff007f;
+  --accent-hover: #e0006c;
+  --border-color: rgba(57, 255, 20, 0.2);
+  --glass-bg: rgba(10, 2, 22, 0.9);
+  --glass-border: rgba(57, 255, 20, 0.15);
+}
+
+/* 3. Sunset (석양 그라데이션) */
+.theme-sunset {
+  --bg-primary: #110c14;
+  --bg-secondary: rgba(30, 20, 35, 0.85);
+  --bg-tertiary: rgba(60, 30, 70, 0.6);
+  --text-primary: #fdf2f8;
+  --text-secondary: #f472b6;
+  --accent-color: #f97316;
+  --accent-hover: #ea580c;
+  --border-color: rgba(244, 114, 182, 0.15);
+  --glass-bg: linear-gradient(135deg, rgba(249, 115, 22, 0.25) 0%, rgba(236, 72, 153, 0.25) 50%, rgba(147, 51, 234, 0.25) 100%);
+  --glass-border: rgba(236, 72, 153, 0.18);
+}
+
+/* 4. Ocean (바다 그라데이션) */
+.theme-ocean {
+  --bg-primary: #061118;
+  --bg-secondary: rgba(10, 25, 35, 0.85);
+  --bg-tertiary: rgba(20, 45, 60, 0.6);
+  --text-primary: #f0fdfa;
+  --text-secondary: #2dd4bf;
+  --accent-color: #06b6d4;
+  --accent-hover: #0891b2;
+  --border-color: rgba(45, 212, 191, 0.15);
+  --glass-bg: linear-gradient(135deg, rgba(45, 212, 191, 0.25) 0%, rgba(6, 182, 212, 0.25) 50%, rgba(29, 78, 216, 0.25) 100%);
+  --glass-border: rgba(6, 182, 212, 0.18);
+}
+
+/* 5. Sakura (사쿠라 블로섬 그라데이션) */
+.theme-sakura {
+  --bg-primary: #1c0e12;
+  --bg-secondary: rgba(40, 20, 26, 0.85);
+  --bg-tertiary: rgba(70, 30, 42, 0.6);
+  --text-primary: #fff1f2;
+  --text-secondary: #fda4af;
+  --accent-color: #f43f5e;
+  --accent-hover: #e11d48;
+  --border-color: rgba(244, 63, 94, 0.15);
+  --glass-bg: linear-gradient(135deg, rgba(251, 113, 133, 0.25) 0%, rgba(244, 63, 94, 0.25) 50%, rgba(190, 24, 74, 0.25) 100%);
+  --glass-border: rgba(244, 63, 94, 0.18);
+}
+
+/* 6. Forest (딥 그린 그라데이션) */
+.theme-forest {
+  --bg-primary: #06120e;
+  --bg-secondary: rgba(10, 30, 22, 0.85);
+  --bg-tertiary: rgba(20, 50, 35, 0.6);
+  --text-primary: #f0fdf4;
+  --text-secondary: #4ade80;
+  --accent-color: #10b981;
+  --accent-hover: #059669;
+  --border-color: rgba(74, 222, 128, 0.15);
+  --glass-bg: linear-gradient(135deg, rgba(74, 222, 128, 0.25) 0%, rgba(16, 185, 129, 0.25) 50%, rgba(6, 95, 70, 0.25) 100%);
+  --glass-border: rgba(16, 185, 129, 0.18);
+}
+
+/* 7. Nebula (우주 네뷸라 그라데이션) */
+.theme-nebula {
+  --bg-primary: #0b071a;
+  --bg-secondary: rgba(20, 12, 35, 0.85);
+  --bg-tertiary: rgba(40, 22, 65, 0.6);
+  --text-primary: #faf5ff;
+  --text-secondary: #c084fc;
+  --accent-color: #a855f7;
+  --accent-hover: #9333ea;
+  --border-color: rgba(192, 132, 252, 0.15);
+  --glass-bg: linear-gradient(135deg, rgba(99, 102, 241, 0.25) 0%, rgba(168, 85, 247, 0.25) 50%, rgba(236, 72, 153, 0.25) 100%);
+  --glass-border: rgba(168, 85, 247, 0.18);
+}
+
+/* 8. Midnight (미드나잇 오로라) */
+.theme-midnight {
+  --bg-primary: #040817;
+  --bg-secondary: rgba(10, 20, 40, 0.85);
+  --bg-tertiary: rgba(20, 35, 65, 0.6);
+  --text-primary: #f0fdf4;
+  --text-secondary: #86efac;
+  --accent-color: #22c55e;
+  --accent-hover: #16a34a;
+  --border-color: rgba(34, 197, 94, 0.15);
+  --glass-bg: linear-gradient(135deg, rgba(29, 78, 216, 0.25) 0%, rgba(14, 116, 144, 0.25) 50%, rgba(34, 197, 94, 0.25) 100%);
+  --glass-border: rgba(14, 116, 144, 0.18);
+}
+
+/* 9. Peach (스위트 피치) */
+.theme-peach {
+  --bg-primary: #1a0f0d;
+  --bg-secondary: rgba(45, 22, 18, 0.85);
+  --bg-tertiary: rgba(75, 32, 25, 0.6);
+  --text-primary: #fff7ed;
+  --text-secondary: #ffedd5;
+  --accent-color: #f97316;
+  --accent-hover: #ea580c;
+  --border-color: rgba(251, 146, 60, 0.15);
+  --glass-bg: linear-gradient(135deg, rgba(251, 146, 60, 0.25) 0%, rgba(249, 115, 22, 0.25) 50%, rgba(234, 88, 12, 0.25) 100%);
+  --glass-border: rgba(251, 146, 60, 0.18);
+}
+
+/* 10. Lavender (라벤더) */
+.theme-lavender {
+  --bg-primary: #120e1e;
+  --bg-secondary: rgba(28, 20, 42, 0.85);
+  --bg-tertiary: rgba(45, 30, 68, 0.6);
+  --text-primary: #fdfeff;
+  --text-secondary: #ddd6fe;
+  --accent-color: #8b5cf6;
+  --accent-hover: #7c3aed;
+  --border-color: rgba(196, 181, 253, 0.15);
+  --glass-bg: linear-gradient(135deg, rgba(167, 139, 250, 0.25) 0%, rgba(139, 92, 246, 0.25) 50%, rgba(109, 40, 217, 0.25) 100%);
+  --glass-border: rgba(139, 92, 246, 0.18);
+}
+
+/* 11. Mint (상쾌한 민트) */
+.theme-mint {
+  --bg-primary: #0a1412;
+  --bg-secondary: rgba(18, 36, 32, 0.85);
+  --bg-tertiary: rgba(30, 56, 50, 0.6);
+  --text-primary: #f0fdfa;
+  --text-secondary: #99f6e4;
+  --accent-color: #14b8a6;
+  --accent-hover: #0d9488;
+  --border-color: rgba(45, 212, 191, 0.15);
+  --glass-bg: linear-gradient(135deg, rgba(94, 234, 212, 0.25) 0%, rgba(20, 184, 166, 0.25) 50%, rgba(13, 148, 136, 0.25) 100%);
+  --glass-border: rgba(20, 184, 166, 0.18);
+}
+
+/* 12. Crimson (블랙 & 딥레드) */
+.theme-crimson {
+  --bg-primary: #0a0102;
+  --bg-secondary: rgba(25, 4, 8, 0.85);
+  --bg-tertiary: rgba(45, 8, 14, 0.6);
+  --text-primary: #fff5f5;
+  --text-secondary: #fecaca;
+  --accent-color: #ef4444;
+  --accent-hover: #dc2626;
+  --border-color: rgba(239, 68, 68, 0.15);
+  --glass-bg: linear-gradient(135deg, rgba(239, 68, 68, 0.25) 0%, rgba(185, 28, 28, 0.25) 50%, rgba(127, 29, 29, 0.25) 100%);
+  --glass-border: rgba(239, 68, 68, 0.18);
 }

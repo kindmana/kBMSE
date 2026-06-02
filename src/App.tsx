@@ -1,14 +1,32 @@
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useEditorStore } from './store/editorStore';
-import { parseBms, encodeBmsValue, decodeBmsValue, BmsData, BmsNote, encodeBms } from './parser/bmsParser';
-import { getRecentFiles, addRecentFile, loadRecentFileHandle, RecentFile, verifyPermission } from './utils/fileSystem';
+import { encodeBmsValue, decodeBmsValue, BmsData, BmsNote } from './parser/bmsParser';
+import { getRecentFiles, RecentFile } from './utils/fileSystem';
+import { calculateTimeline } from './utils/timelineCalculator';
+import { getAudioContext, playSound, playSoloSound, stopAllSounds, findAudioBuffer } from './utils/audioPlayer';
+import { useFileOperations } from './hooks/useFileOperations';
 import './App.css';
 
-import { LAYOUT, BASE_MEASURE_HEIGHT, getTargetLaneIndex } from './constants/layout';
+import { LAYOUT, BASE_MEASURE_HEIGHT, getTargetLaneIndex, getFilteredLayout } from './constants/layout';
 import { Topbar } from './components/layout/Topbar';
 import { LeftSidebar } from './components/layout/LeftSidebar';
 import { RightSidebar } from './components/layout/RightSidebar';
+import { GoToMeasureModal } from './components/ui/GoToMeasureModal';
+import { SettingsModal } from './components/ui/SettingsModal';
+import { HelpModal } from './components/ui/HelpModal';
+import { BmsDiffModal } from './components/ui/BmsDiffModal';
+import { BmsValidationErrorModal } from './components/ui/BmsValidationErrorModal';
+import { BmsValidationError } from './utils/bmsValidator';
+import { TimingValueModal } from './components/ui/TimingValueModal';
+import { TimeSpaceModal } from './components/ui/TimeSpaceModal';
+import { TimeBpmModal } from './components/ui/TimeBpmModal';
+import { TimeStopModal } from './components/ui/TimeStopModal';
+import { getSnappedAbsTime as getSnappedAbsTimeUtil } from './utils/coordinateCalculator';
+import { useTimeEditOperations } from './hooks/useTimeEditOperations';
+import { useBmsDiff } from './hooks/useBmsDiff';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 
+const MIN_SCROLL_Y = -120; // 0번 마디 밑부분 여백을 위해 마이너스 스크롤 허용
 
 function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -16,28 +34,217 @@ function App() {
   
   const { 
     activeTool, setActiveTool, 
-    useBase62, setUseBase62, 
+    useBase62, 
     bmsData, setBmsData, 
-    rawBmsContent, setRawBmsContent,
+    setRawBmsContent,
     gridSnap, setGridSnap,
-    selectedNotes, setSelectedNotes,
+    auxGridSnap,
+    selectedNotes, setSelectedNotes: storeSetSelectedNotes,
     currentNoteValue,
-    addNote, removeNote, updateNote, removeNotes, updateNotes,
+    addNote, addNotes, removeNote, updateNote, removeNotes, updateNotes,
     undo, redo, commitHistory,
     zoomX, setZoomX,
     zoomY, setZoomY,
     fileName, setFileName,
     fileHandle, setFileHandle,
     historyIndex, lastSavedHistoryIndex, setLastSaved,
-    updateHeader, updateWav, updateBmp
+    updateHeader, updateWav, updateBmp,
+    viewSettings,
+    settings,
+    keyMode,
+    lockVerticalPosition,
+    
+    // Playback state and actions
+    isPlaying,
+    playFromBeginning,
+    stopPlay
   } = useEditorStore();
 
+  const setSelectedNotes = useCallback((ids: string[]) => {
+    const extendedIds = new Set<string>(ids);
+    const pairs = longNotePairsRef.current || [];
+    
+    let sizeBefore: number;
+    do {
+      sizeBefore = extendedIds.size;
+      pairs.forEach(pair => {
+        if (extendedIds.has(pair.start.id)) {
+          extendedIds.add(pair.end.id);
+        }
+        if (extendedIds.has(pair.end.id)) {
+          extendedIds.add(pair.start.id);
+        }
+      });
+    } while (extendedIds.size !== sizeBefore);
+
+    storeSetSelectedNotes(Array.from(extendedIds));
+  }, [storeSetSelectedNotes]);
+
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'general' | 'visual'>('general');
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [helpTab, setHelpTab] = useState<'shortcuts' | 'leftSidebar' | 'rightSidebar' | 'settings'>('shortcuts');
+
+  const handleOpenSettings = (tab: 'general' | 'visual') => {
+    setSettingsTab(tab);
+    setIsSettingsOpen(true);
+  };
+
+  const handleOpenHelp = (tab: 'shortcuts' | 'leftSidebar' | 'rightSidebar' | 'settings' = 'shortcuts') => {
+    setHelpTab(tab);
+    setIsHelpOpen(true);
+  };
+
+  // Playback Refs
+  const timelineRef = useRef<any>(null);
+  const sortedNotesRef = useRef<any[]>([]);
+  const playedNoteIdsRef = useRef<Set<string>>(new Set());
+  const isPlayingRef = useRef(false);
+  const playStartRealTimeRef = useRef(0);
+  const playStartTimeOffsetRef = useRef(0);
+  const playbackSpeedRef = useRef(1.0);
+  const playStartScrollYRef = useRef(0);
+
   const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
+  const [isGoToMeasureOpen, setIsGoToMeasureOpen] = useState(false);
+  const [isBmsDiffOpen, setIsBmsDiffOpen] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<BmsValidationError[]>([]);
+  const [isValidationErrorOpen, setIsValidationErrorOpen] = useState(false);
+  const [isTimingValueModalOpen, setIsTimingValueModalOpen] = useState(false);
+  const [timingModalChannel, setTimingModalChannel] = useState(0);
+  const timingModalClickInfo = useRef<{ measure: number; position: number; actualChannel: number; actualIndex: number } | null>(null);
+  const [bmsFilesToSelect, setBmsFilesToSelect] = useState<File[]>([]);
+  const [isBmsSelectionOpen, setIsBmsSelectionOpen] = useState(false);
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
+
+  // 시간편집 (Time Edit F1) 도구 상태 및 드래그 Ref 선언
+  const [timeSelection, setTimeSelection] = useState<{ start: number; end: number } | null>(null);
+  const [isTimeSpaceModalOpen, setIsTimeSpaceModalOpen] = useState(false);
+  const [isTimeBpmModalOpen, setIsTimeBpmModalOpen] = useState(false);
+  const [isTimeStopModalOpen, setIsTimeStopModalOpen] = useState(false);
+
+  const isTimeDragging = useRef(false);
+  const timeDragStart = useRef<number | null>(null);
+  const timeDragCurrent = useRef<number | null>(null);
+
+  // 툴 전환 시 시간 선택 영역 실시간 청소
+  useEffect(() => {
+    if (activeTool !== 'time') {
+      setTimeSelection(null);
+    }
+  }, [activeTool]);
 
   useEffect(() => {
     setRecentFiles(getRecentFiles());
   }, []);
+
+  // BMS 키음 엇갈림 검사 보존 상태 useBmsDiff 훅 바인딩
+  const {
+    diffBaseBms,
+    setDiffBaseBms,
+    diffBaseFileName,
+    setDiffBaseFileName,
+    diffResults,
+    setDiffResults,
+    diffIsCompared,
+    setDiffIsCompared,
+    diffCheckHistoryIndex,
+    resetDiff
+  } = useBmsDiff(historyIndex);
+
+  // 새 파일 로드 시 엇갈림 검사 결과 자동 초기화
+  useEffect(() => {
+    resetDiff();
+  }, [fileName]);
+
+  // Sync playback refs
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  const currentSpeed = useEditorStore((state) => state.playbackSpeed);
+  useEffect(() => {
+    playbackSpeedRef.current = currentSpeed;
+  }, [currentSpeed]);
+
+  // Recalculate timeline when bmsData changes
+  useEffect(() => {
+    if (bmsData) {
+      const timeline = calculateTimeline(bmsData);
+      timelineRef.current = timeline;
+      
+      const sorted = [...bmsData.notes]
+        .map(note => ({
+          ...note,
+          absoluteTime: timeline.noteTimeMap[note.id] ?? 0
+        }))
+        .sort((a, b) => a.absoluteTime - b.absoluteTime);
+      
+      sortedNotesRef.current = sorted;
+    } else {
+      timelineRef.current = null;
+      sortedNotesRef.current = [];
+    }
+    playedNoteIdsRef.current.clear();
+  }, [bmsData]);
+
+  // Handle Playback state transitions
+  useEffect(() => {
+    if (isPlaying) {
+      const actx = getAudioContext();
+      if (actx.state === 'suspended') {
+        actx.resume();
+      }
+      
+      let startOffset = 0;
+      if (playFromBeginning) {
+        startOffset = -0.5; // -0.5초 대기 시간
+        scrollY.current = MIN_SCROLL_Y;
+        requestRender();
+      } else {
+        // Calculate start offset from current scrollY
+        const currentMeasureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
+        const targetY = scrollY.current + 80; // Judgment line is at scrollY + 80
+        const absolutePosition = targetY / currentMeasureHeight;
+        
+        let targetMeasure = 0;
+        const currentMeasureOffsets = measureOffsetsRef.current;
+        while (targetMeasure < currentMeasureOffsets.offsets.length - 1 && currentMeasureOffsets.offsets[targetMeasure + 1] <= absolutePosition) {
+          targetMeasure++;
+        }
+        const measureStart = currentMeasureOffsets.offsets[targetMeasure];
+        const measureLen = bmsDataRef.current?.measureLengths?.[targetMeasure] ?? 1;
+        const position = (absolutePosition - measureStart) / measureLen;
+        
+        if (timelineRef.current) {
+          startOffset = timelineRef.current.positionToTime(targetMeasure, Math.max(0, Math.min(1, position)));
+        }
+      }
+      
+      playStartScrollYRef.current = scrollY.current; // Store scroll position where play started
+      playStartTimeOffsetRef.current = startOffset;
+      playStartRealTimeRef.current = -1; // Set flag to capture exact active frame time later
+      playedNoteIdsRef.current.clear();
+      
+      // Mark past notes as played so they don't trigger
+      const sorted = sortedNotesRef.current;
+      for (const note of sorted) {
+        if (note.absoluteTime < startOffset) {
+          playedNoteIdsRef.current.add(note.id);
+        }
+      }
+      
+      requestRender();
+    } else {
+      stopAllSounds();
+      const state = useEditorStore.getState();
+      if (state.isStopRequested) {
+        scrollY.current = playStartScrollYRef.current;
+        requestRender();
+        useEditorStore.setState({ isStopRequested: false }); // Reset flag
+      }
+    }
+  }, [isPlaying, playFromBeginning]);
 
   const isDirty = historyIndex !== lastSavedHistoryIndex;
 
@@ -72,10 +279,97 @@ function App() {
 
   const getActiveLayout = () => {
     const player = bmsDataRef.current?.header.player || 1;
+    const settings = viewSettingsRef.current;
+    const currentSettings = settingsRef.current;
+    
+    let layout = LAYOUT;
+    
     if (player === 1) {
-      return LAYOUT.filter(l => !l.name.startsWith('D') && l.name !== 'S2');
+      let singleLayout = LAYOUT.filter(l => !l.name.startsWith('D') && l.name !== 'S2');
+      if (currentSettings.scratchOnRight) {
+        // Deep copy objects to avoid modifying the static shared LAYOUT
+        singleLayout = singleLayout.map(l => ({ ...l }));
+        
+        // Find S1 and A7
+        const s1Index = singleLayout.findIndex(l => l.name === 'S1');
+        if (s1Index !== -1) {
+          const [s1] = singleLayout.splice(s1Index, 1);
+          const a7Index = singleLayout.findIndex(l => l.name === 'A7');
+          if (a7Index !== -1) {
+            singleLayout.splice(a7Index + 1, 0, {
+              ...s1,
+              isGroupEnd: true // S1 is now the end of the group
+            });
+            // Clear isGroupEnd from A7
+            const a7 = singleLayout.find(l => l.name === 'A7');
+            if (a7) a7.isGroupEnd = false;
+          }
+        }
+      }
+      layout = singleLayout;
     }
-    return LAYOUT;
+    
+    // Apply keyMode filtering based on dynamic specifications
+    layout = getFilteredLayout(keyModeRef.current, layout);
+    
+    // Dynamically preserve the visual vertical border between playable key lanes and BGM area
+    layout = layout.map(l => {
+      const isPlayableLane = l.type === 'channel' && l.channel !== undefined && (
+        (l.channel >= 0x11 && l.channel <= 0x19) || 
+        (l.channel >= 0x21 && l.channel <= 0x29)
+      );
+      if (isPlayableLane) {
+        return { ...l, isGroupEnd: false };
+      }
+      return l;
+    });
+
+    let lastPlayableIdx = -1;
+    for (let i = 0; i < layout.length; i++) {
+      const l = layout[i];
+      const isPlayableLane = l.type === 'channel' && l.channel !== undefined && (
+        (l.channel >= 0x11 && l.channel <= 0x19) || 
+        (l.channel >= 0x21 && l.channel <= 0x29)
+      );
+      if (isPlayableLane) {
+        lastPlayableIdx = i;
+      }
+    }
+
+    if (lastPlayableIdx !== -1) {
+      layout = layout.map((l, idx) => {
+        if (idx === lastPlayableIdx) {
+          return { ...l, isGroupEnd: true };
+        }
+        return l;
+      });
+    }
+    
+    // Scale lane widths by custom settings width (or static fallback)
+    const scaledLayout = layout.map(l => {
+      // generic BGM lanes share same 'B' setting width if defined
+      let laneKey = l.name;
+      if (l.type === 'bgm') {
+        laneKey = 'B';
+      }
+      const customConfig = currentSettings.customLaneColors[laneKey];
+      const baseWidth = (customConfig && customConfig.width !== undefined) 
+        ? customConfig.width 
+        : l.width;
+
+      return {
+        ...l,
+        width: baseWidth
+      };
+    });
+
+    return scaledLayout.filter(l => {
+      if (l.name === 'BPM') return settings.showBpm;
+      if (l.name === 'STOP') return settings.showStop;
+      if (l.name === 'SCR') return settings.showScroll;
+      if (l.name === 'BGA' || l.name === 'LYR' || l.name === 'POR') return settings.showBga;
+      return true;
+    });
   };
 
   // Replaced with refs for performance:
@@ -86,7 +380,103 @@ function App() {
   const zoomYRef = useRef<number>(zoomY);
   const activeToolRef = useRef<string>(activeTool);
   const gridSnapRef = useRef<number>(gridSnap);
+  const auxGridSnapRef = useRef<number>(auxGridSnap);
   const selectedNotesRef = useRef<string[]>(selectedNotes);
+  const viewSettingsRef = useRef(viewSettings);
+  const settingsRef = useRef(settings);
+  const keyModeRef = useRef(keyMode);
+  const lockVerticalPositionRef = useRef(lockVerticalPosition);
+
+  // Autoscroll Feature states and helpers
+  const isAutoscrolling = useRef<boolean>(false);
+  const autoscrollAnchor = useRef<{ x: number; y: number } | null>(null);
+  const autoscrollCurrent = useRef<{ x: number; y: number } | null>(null);
+  const autoscrollFrameId = useRef<number | null>(null);
+
+  const handleAutoscrollMouseMove = (e: MouseEvent) => {
+    autoscrollCurrent.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const stopAutoscroll = () => {
+    if (!isAutoscrolling.current) return;
+    isAutoscrolling.current = false;
+    autoscrollAnchor.current = null;
+    autoscrollCurrent.current = null;
+    
+    if (autoscrollFrameId.current !== null) {
+      cancelAnimationFrame(autoscrollFrameId.current);
+      autoscrollFrameId.current = null;
+    }
+    
+    window.removeEventListener('mousemove', handleAutoscrollMouseMove);
+    window.removeEventListener('mousedown', handleAutoscrollMousedownOutside);
+    requestRender();
+  };
+
+  const handleAutoscrollMousedownOutside = (e: MouseEvent) => {
+    // Prevent immediate close trigger during click down
+    e.preventDefault();
+    stopAutoscroll();
+  };
+
+  const runAutoscrollLoop = () => {
+    if (!isAutoscrolling.current || !autoscrollAnchor.current || !autoscrollCurrent.current) {
+      return;
+    }
+
+    const anchor = autoscrollAnchor.current;
+    const current = autoscrollCurrent.current;
+
+    const dx = current.x - anchor.x;
+    const dy = current.y - anchor.y;
+
+    const deadzone = 10;
+    
+    if (Math.abs(dy) > deadzone) {
+      let speedY = (dy - Math.sign(dy) * deadzone) * 0.12;
+      if (settingsRef.current.scrollDirection === 'normal') {
+        speedY = -speedY;
+      }
+      scrollY.current += speedY;
+    }
+    
+    if (Math.abs(dx) > deadzone) {
+      const speedX = (dx - Math.sign(dx) * deadzone) * 0.12;
+      scrollX.current += speedX;
+    }
+
+    scrollY.current = Math.min(maxScrollYRef.current, Math.max(MIN_SCROLL_Y, scrollY.current));
+    scrollX.current = Math.min(maxScrollXRef.current, Math.max(0, scrollX.current));
+
+    requestRender();
+
+    autoscrollFrameId.current = requestAnimationFrame(runAutoscrollLoop);
+  };
+
+  const startAutoscroll = (clientX: number, clientY: number) => {
+    isAutoscrolling.current = true;
+    autoscrollAnchor.current = { x: clientX, y: clientY };
+    autoscrollCurrent.current = { x: clientX, y: clientY };
+
+    window.addEventListener('mousemove', handleAutoscrollMouseMove);
+    
+    setTimeout(() => {
+      window.addEventListener('mousedown', handleAutoscrollMousedownOutside);
+    }, 50);
+
+    autoscrollFrameId.current = requestAnimationFrame(runAutoscrollLoop);
+    requestRender();
+  };
+
+  useEffect(() => {
+    return () => {
+      if (autoscrollFrameId.current !== null) {
+        cancelAnimationFrame(autoscrollFrameId.current);
+      }
+      window.removeEventListener('mousemove', handleAutoscrollMouseMove);
+      window.removeEventListener('mousedown', handleAutoscrollMousedownOutside);
+    };
+  }, []);
 
   useEffect(() => {
     bmsDataRef.current = bmsData;
@@ -94,10 +484,25 @@ function App() {
     zoomXRef.current = zoomX;
     zoomYRef.current = zoomY;
     activeToolRef.current = activeTool;
+    
+    // activeTool 변경 시 캔버스 마우스 커서 즉각 갱신
+    if (canvasRef.current) {
+      if (activeTool === 'select') {
+        canvasRef.current.style.cursor = 'default';
+      } else {
+        canvasRef.current.style.cursor = 'crosshair';
+      }
+    }
+
     gridSnapRef.current = gridSnap;
+    auxGridSnapRef.current = auxGridSnap;
     selectedNotesRef.current = selectedNotes;
+    viewSettingsRef.current = viewSettings;
+    settingsRef.current = settings;
+    keyModeRef.current = keyMode;
+    lockVerticalPositionRef.current = lockVerticalPosition;
     requestRender();
-  }, [bmsData, useBase62, zoomX, zoomY, activeTool, gridSnap, selectedNotes]);
+  }, [bmsData, useBase62, zoomX, zoomY, activeTool, gridSnap, auxGridSnap, selectedNotes, viewSettings, settings, keyMode, lockVerticalPosition]);
 
   useEffect(() => {
     let animationFrameId: number;
@@ -155,20 +560,41 @@ function App() {
       const len = bmsData?.measureLengths?.[m] ?? 1;
       currentOffset += len;
     }
+    console.log("[Diagnostic] Recalculating measureOffsets. maxM:", maxM, "measureLengths keys:", bmsData ? Object.keys(bmsData.measureLengths) : "none", "sample offsets[7..9]:", offsets.slice(7, 10));
     return { offsets, totalLen: currentOffset, maxM };
   }, [bmsData]);
 
+  const hasNotesInsideStopArea = useMemo(() => {
+    if (!timeSelection || !bmsData || !measureOffsets) return false;
+    const { start: startAbs, end: endAbs } = timeSelection;
+    if (endAbs <= startAbs) return false;
 
+    const startLimit = startAbs + 1e-6;
+    const endLimit = endAbs + 1e-6;
+
+    return bmsData.notes.some(note => {
+      if (note.measure >= measureOffsets.offsets.length) return false;
+      const noteMeasureLen = bmsData.measureLengths[note.measure] ?? 1;
+      const noteAbs = measureOffsets.offsets[note.measure] + note.position * noteMeasureLen;
+      return noteAbs > startLimit && noteAbs <= endLimit;
+    });
+  }, [timeSelection, bmsData, measureOffsets]);
 
   const overlappingNoteIds = useMemo(() => {
     if (!bmsData) return new Set<string>();
     const overlaps = new Set<string>();
     const notes = bmsData.notes;
     
-    // Sort notes by channel, then by absolute position to optimize
-    const sorted = [...notes].sort((a, b) => {
+    const timeline = calculateTimeline(bmsData);
+    const timeMap = timeline.noteTimeMap;
+
+    // Sort notes by channel, then by absolute time to optimize
+    const sorted = [...notes].map(n => ({
+      ...n,
+      time: timeMap[n.id] ?? 0
+    })).sort((a, b) => {
       if (a.channel !== b.channel) return a.channel - b.channel;
-      return (a.measure + a.position) - (b.measure + b.position);
+      return a.time - b.time;
     });
     
     for (let i = 0; i < sorted.length; i++) {
@@ -177,15 +603,16 @@ function App() {
                          (a.channel >= 0x21 && a.channel <= 0x29) || 
                          (a.channel >= 0x51 && a.channel <= 0x59) || 
                          (a.channel >= 0x61 && a.channel <= 0x69);
-      const threshold = isPlayable ? (1 / 128) + 1e-6 : 1e-6;
-      const posA = a.measure + a.position;
+      // 건반 연주 채널은 0.01초(10ms), 그 외 채널은 미세 오차(0.0001초) 겹침 판정 기준 적용
+      const threshold = isPlayable ? 0.01 : 0.0001;
+      const timeA = a.time;
       
       for (let j = i + 1; j < sorted.length; j++) {
         const b = sorted[j];
         if (a.channel !== b.channel) break; // Channels are sorted
         
-        const posB = b.measure + b.position;
-        if (posB - posA > threshold) break; // Exceeded threshold
+        const timeB = b.time;
+        if (timeB - timeA > threshold) break; // Exceeded threshold
         
         // For BGM, need to check visual lane
         if (a.channel === 0x01 && (a.index % 100) !== (b.index % 100)) continue;
@@ -259,10 +686,57 @@ function App() {
   const longNotePairsRef = useRef(longNotePairs);
   longNotePairsRef.current = longNotePairs;
 
+  const longNoteEndIds = useMemo(() => {
+    const ids = new Set<string>();
+    longNotePairs.forEach(pair => {
+      ids.add(pair.end.id);
+    });
+    return ids;
+  }, [longNotePairs]);
+
+  const longNoteEndIdsRef = useRef(longNoteEndIds);
+  longNoteEndIdsRef.current = longNoteEndIds;
+
   const currentNoteValueRef = useRef(currentNoteValue);
   currentNoteValueRef.current = currentNoteValue;
 
+  const {
+    handleNew,
+    handleOpen,
+    handleSave,
+    handleSaveAs,
+    handleRecentClick,
+    loadBmsFromFile
+  } = useFileOperations({
+    isDirty,
+    bmsDataRef,
+    useBase62Ref,
+    scrollY,
+    scrollX,
+    fileName,
+    fileHandle,
+    setBmsData,
+    setRawBmsContent,
+    setFileName,
+    setFileHandle,
+    setLastSaved,
+    setIsFileMenuOpen,
+    setRecentFiles,
+    setBmsFilesToSelect,
+    setIsBmsSelectionOpen,
+    onValidationError: (errors) => {
+      setValidationErrors(errors);
+      setIsValidationErrorOpen(true);
+    }
+  });
+
   const drawGridAndNotes = () => {
+    // if (isPlayingRef.current !== lastIsPlayingLog.current) {
+    //   console.log(`[DrawLoop] isPlaying state changed: ${lastIsPlayingLog.current} -> ${isPlayingRef.current}. Timeline exists: ${!!timelineRef.current}, BMS Data exists: ${!!bmsDataRef.current}, Sorted Notes count: ${sortedNotesRef.current?.length}`);
+    //   lastIsPlayingLog.current = isPlayingRef.current;
+    //   debugFrameCount.current = 0;
+    // }
+    renderRequested.current = false;
     try {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -276,16 +750,163 @@ function App() {
       const currentLongNotePairs = longNotePairsRef.current;
       const currentZoomX = zoomXRef.current;
       const currentZoomY = zoomYRef.current;
+      const currentSettings = settingsRef.current;
       
       const currentMeasureHeight = BASE_MEASURE_HEIGHT * currentZoomY;
+
+      // Update autoscroll & schedule audio playback when isPlaying is true
+      if (isPlayingRef.current && timelineRef.current) {
+        const actx = getAudioContext();
+        
+        if (playStartRealTimeRef.current === -1 && actx.state === 'running') {
+          playStartRealTimeRef.current = actx.currentTime;
+          console.log(`[Playback] playStartRealTime captured at first active frame: ${playStartRealTimeRef.current}`);
+
+          // 중간 재생 엇갈림 구제: 현재 재생 개시점(startOffset) 이전에 속해 있으나,
+          // 사운드 버퍼의 길이(duration)가 길어 현재 시점에도 계속 울려 퍼져야 하는 롱 BGM/루프음을 중간 재생
+          const startOffset = playStartTimeOffsetRef.current;
+          const currentBuffers = useEditorStore.getState().audioBuffers;
+          const sorted = sortedNotesRef.current;
+          
+          if (currentBmsData && sorted) {
+            console.log(`[PlaybackCatchUp] Scanning past notes for long loop catch-up at startOffset: ${startOffset.toFixed(3)}s`);
+            for (let i = 0; i < sorted.length; i++) {
+              const note = sorted[i];
+              // 시작 지점보다 미래의 노트는 배제
+              if (note.absoluteTime >= startOffset) continue;
+              
+              const isAudioChannel = 
+                note.channel === 0x01 || 
+                (note.channel >= 0x11 && note.channel <= 0x19) || 
+                (note.channel >= 0x21 && note.channel <= 0x29) || 
+                (note.channel >= 0x51 && note.channel <= 0x59) || 
+                (note.channel >= 0x61 && note.channel <= 0x69);
+                
+              if (!isAudioChannel || longNoteEndIdsRef.current.has(note.id)) continue;
+              
+              const wavIndex = note.value;
+              const filename = currentBmsData.wavs[wavIndex];
+              if (filename) {
+                const buffer = findAudioBuffer(filename, currentBuffers);
+                if (buffer) {
+                  const duration = buffer.duration;
+                  // 재생 시작점 시점에도 오디오가 여전히 지속되는지 확인
+                  if (note.absoluteTime + duration > startOffset) {
+                    const latency = actx.currentTime - playStartRealTimeRef.current;
+                    const soundOffset = startOffset - note.absoluteTime + latency;
+                    playSound(buffer, actx.currentTime, note.id, note.value, soundOffset);
+                    console.log(`[PlaybackCatchUp] Catch-up sound note ${note.id} (WAV ${wavIndex}) from soundOffset: ${soundOffset.toFixed(3)}s (latency: +${latency.toFixed(4)}s)`);
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if (playStartRealTimeRef.current !== -1) {
+          const now = actx.currentTime;
+          const speed = playbackSpeedRef.current;
+          const elapsed = (now - playStartRealTimeRef.current) * speed + playStartTimeOffsetRef.current;
+          
+          // debugFrameCount.current++;
+          // if (debugFrameCount.current % 60 === 0) {
+          //   console.log(`[PlaybackLoop] elapsed: ${elapsed.toFixed(3)}s, currentTimeOffset: ${playStartTimeOffsetRef.current.toFixed(3)}s, playStartRealTime: ${playStartRealTimeRef.current.toFixed(3)}s, actx.currentTime: ${actx.currentTime.toFixed(3)}s, sortedNotes length: ${sortedNotesRef.current?.length}, playedNotes size: ${playedNoteIdsRef.current?.size}`);
+          // }
+          
+          // Position current Y to match target position of elapsed seconds at judgment line (80px from bottom)
+          const pos = timelineRef.current.timeToPosition(elapsed);
+          if (pos.measure < currentMeasureOffsets.offsets.length) {
+            const measureStart = currentMeasureOffsets.offsets[pos.measure];
+            const measureLen = currentBmsData?.measureLengths?.[pos.measure] ?? 1;
+            const worldY = (measureStart + pos.position * measureLen) * currentMeasureHeight;
+            
+            scrollY.current = Math.min(maxScrollYRef.current, Math.max(MIN_SCROLL_Y, worldY - 80));
+          }
+
+          // Key sound look-ahead scheduler (+150ms window)
+          const lookAhead = 0.150;
+          const limitTime = elapsed + lookAhead;
+          const sorted = sortedNotesRef.current;
+          const played = playedNoteIdsRef.current;
+          
+          if (currentBmsData) {
+            for (let i = 0; i < sorted.length; i++) {
+              const note = sorted[i];
+              
+              // Skip notes that have already passed (allowing small threshold)
+              if (note.absoluteTime < elapsed - 0.050) {
+                played.add(note.id);
+                continue;
+              }
+              
+              // Beyond our look-ahead window, since notes are sorted, we can stop early
+              if (note.absoluteTime > limitTime) {
+                break;
+              }
+              
+              // Skip non-audio channels (like BGA, poor, stops, bpms)
+              const isAudioChannel = 
+                note.channel === 0x01 || 
+                (note.channel >= 0x11 && note.channel <= 0x19) || 
+                (note.channel >= 0x21 && note.channel <= 0x29) || 
+                (note.channel >= 0x51 && note.channel <= 0x59) || 
+                (note.channel >= 0x61 && note.channel <= 0x69);
+              
+              if (!isAudioChannel) {
+                played.add(note.id);
+                continue;
+              }
+
+              if (longNoteEndIdsRef.current.has(note.id)) {
+                played.add(note.id);
+                continue;
+              }
+
+              if (!played.has(note.id)) {
+                played.add(note.id);
+                
+                // Map note time to absolute AudioContext time
+                const playTime = playStartRealTimeRef.current + (note.absoluteTime - playStartTimeOffsetRef.current) / speed;
+                
+                // Trigger audio buffer if loaded
+                const wavIndex = note.value;
+                const filename = currentBmsData.wavs[wavIndex];
+                if (filename) {
+                  const currentBuffers = useEditorStore.getState().audioBuffers;
+                  const buffer = findAudioBuffer(filename, currentBuffers);
+                  if (buffer) {
+                    playSound(buffer, playTime, note.id, note.value);
+                  }
+                }
+              }
+            }
+          }
+
+          // Automatic stop at the end of the song
+          const totalDuration = timelineRef.current.totalDuration;
+          if (elapsed >= totalDuration + 1.0) {
+            setTimeout(() => {
+              stopPlay();
+            }, 0);
+          } else {
+            // Request continuous frames
+            requestRender();
+          }
+        } else {
+          // AudioContext is not running yet (e.g. resuming), wait for next frame
+          requestRender();
+        }
+      }
 
       // Apply zoom to layout widths
       const zoomedLayout = getActiveLayout().map(l => ({ ...l, width: l.width * currentZoomX }));
 
+      const theme = currentSettings.theme;
+
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       
-      // Container Background
-      ctx.fillStyle = '#050505';
+      // 캔버스 기저 배경은 완전한 검정색(#000000)으로 단색 칠하여, 불투명도 0% 영역이 완벽한 검정색으로 표현되도록 합니다.
+      ctx.fillStyle = '#000000';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       ctx.save();
@@ -300,26 +921,94 @@ function App() {
       let currentX = 50; // Padding
       const totalWidth = 50 + zoomedLayout.reduce((sum, l) => sum + l.width, 0) + 50;
 
+      const settings = viewSettingsRef.current;
+
       // Draw left-most boundary line
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(50, topY);
-      ctx.lineTo(50, bottomY);
-      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-      ctx.stroke();
+      if (settings.showVerticalLine) {
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(50, topY);
+        ctx.lineTo(50, bottomY);
+        ctx.strokeStyle = theme === 'light' 
+          ? `rgba(0,0,0,${currentSettings.verticalLineOpacity * 0.4})` 
+          : `rgba(255,255,255,${currentSettings.verticalLineOpacity})`;
+        ctx.stroke();
+      }
 
       // 1. Draw Lane Backgrounds and right-side borders
       zoomedLayout.forEach((lane) => {
-        ctx.fillStyle = lane.color;
+        let laneKey = lane.name;
+        if (lane.type === 'bgm') {
+          laneKey = 'B';
+        }
+        
+        const customColors = settingsRef.current.customLaneColors || {};
+        const customColor = customColors[laneKey];
+        let laneColor = lane.color;
+        let bgAlpha = 1.0;
+
+        // 마디(MSR) 및 타이밍 레인(BPM, STOP, SCR)에 대해서만 사용자가 설정한 기저 배경색과 투명도를 적용합니다.
+        const isTimingOrMeasureLane = lane.type === 'measure' || lane.name === 'BPM' || lane.name === 'STOP' || lane.name === 'SCR';
+
+        if (customColor) {
+          // 배경색은 박스색(bg)과 같은 색상에 불투명도 15%로 통일 (특수 레인은 0%)
+          laneColor = customColor.gridBg ?? customColor.bg;
+          bgAlpha = customColor.gridBgAlpha ?? (isTimingOrMeasureLane ? 0.0 : 0.15);
+        } else {
+          // 테마에 구애받지 않고 극대화된 가독성을 선사하는 고정 다크 레인 기저 컬러 시스템 적용
+          if (lane.type === 'measure') {
+            laneColor = '#000000';
+            bgAlpha = 0.0;
+          } else if (lane.name === 'BPM' || lane.name === 'STOP' || lane.name === 'SCR') {
+            laneColor = '#000000';
+            bgAlpha = 0.0;
+          } else if (lane.name === 'BGA' || lane.name === 'LYR' || lane.name === 'POR') {
+            laneColor = '#10b981';
+            bgAlpha = 0.15;
+          } else if (lane.name === 'S1' || lane.name === 'S2') {
+            laneColor = '#ef4444';
+            bgAlpha = 0.15;
+          } else if (lane.type === 'bgm') {
+            laneColor = '#e4e4e7';
+            bgAlpha = 0.15;
+          } else {
+            // 건반 레인
+            bgAlpha = 0.15;
+            if (lane.color === '#1e40af') {
+              laneColor = '#1e40af';
+            } else {
+              laneColor = '#ffffff';
+            }
+          }
+        }
+
+        ctx.save();
+        ctx.globalAlpha = bgAlpha;
+        ctx.fillStyle = laneColor;
         ctx.fillRect(currentX, topY, lane.width, canvas.height);
+        ctx.restore();
         
         currentX += lane.width;
 
-        ctx.beginPath();
-        ctx.moveTo(currentX, topY);
-        ctx.lineTo(currentX, bottomY);
-        ctx.strokeStyle = lane.isGroupEnd ? 'rgba(255,255,255,0.4)' : '#222222';
-        ctx.stroke();
+        if (settings.showVerticalLine) {
+          ctx.beginPath();
+          ctx.moveTo(currentX, topY);
+          ctx.lineTo(currentX, bottomY);
+          
+          let strokeColor = '';
+          if (lane.isGroupEnd) {
+            strokeColor = theme === 'light'
+              ? `rgba(0, 0, 0, ${currentSettings.verticalLineOpacity * 0.4})`
+              : `rgba(255, 255, 255, ${currentSettings.verticalLineOpacity})`;
+          } else {
+            strokeColor = theme === 'light'
+              ? `rgba(0, 0, 0, ${currentSettings.subVerticalLineOpacity * 0.4})`
+              : `rgba(255, 255, 255, ${currentSettings.subVerticalLineOpacity})`;
+          }
+          
+          ctx.strokeStyle = strokeColor;
+          ctx.stroke();
+        }
       });
 
       // 2. Draw Measure Lines
@@ -331,7 +1020,7 @@ function App() {
       maxScrollXRef.current = Math.max(0, totalWidth - canvas.width);
       maxScrollYRef.current = Math.max(0, totalHeight - canvas.height);
       
-      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.fillStyle = theme === 'light' ? '#3f3f46' : 'rgba(255,255,255,0.4)';
       ctx.font = '10px Inter';
       ctx.textAlign = 'center';
 
@@ -340,34 +1029,152 @@ function App() {
         
         if (y < topY - currentMeasureHeight || y > bottomY + currentMeasureHeight) continue;
 
-        ctx.strokeStyle = 'rgba(255,255,255,0.5)'; // Brighter measure line
-        ctx.beginPath();
-        ctx.moveTo(50, y);
-        ctx.lineTo(currentX, y);
-        ctx.stroke();
+        if (settings.showMeasureLine) {
+          ctx.strokeStyle = theme === 'light' 
+            ? `rgba(0, 0, 0, ${currentSettings.measureLineOpacity * 0.4})` 
+            : (theme === 'cyberpunk' ? `rgba(255, 0, 255, ${currentSettings.measureLineOpacity})` : `rgba(255, 255, 255, ${currentSettings.measureLineOpacity})`);
+          ctx.beginPath();
+          ctx.moveTo(50, y);
+          ctx.lineTo(currentX, y);
+          ctx.stroke();
+        }
 
-        ctx.strokeStyle = 'rgba(255,255,255,0.03)';
         const measureLen = currentBmsData?.measureLengths?.[m] ?? 1;
         const snap = gridSnapRef.current;
-        for (let beat = 1; beat < snap; beat++) {
-          const beatY = y - (currentMeasureHeight * measureLen / snap) * beat;
-          ctx.beginPath();
-          ctx.moveTo(50, beatY);
-          ctx.lineTo(currentX, beatY);
-          ctx.stroke();
+        const auxSnap = auxGridSnapRef.current;
+
+        const lineMap = new Map<number, number>();
+
+        // 1. Aux grid lines (higher priority/brightness) - absolute snaps
+        const maxAux = Math.ceil(measureLen * auxSnap);
+        for (let j = 1; j < maxAux; j++) {
+          const ratio = j / auxSnap;
+          if (ratio >= measureLen - 1e-9) continue;
+          lineMap.set(ratio, 0.2); // Aux grid line opacity
+        }
+
+        // 2. Main grid lines (lower priority/brightness) - absolute snaps
+        const maxMain = Math.ceil(measureLen * snap);
+        for (let i = 1; i < maxMain; i++) {
+          const ratio = i / snap;
+          if (ratio >= measureLen - 1e-9) continue;
+          let exists = false;
+          for (const key of lineMap.keys()) {
+            if (Math.abs(key - ratio) < 1e-9) {
+              exists = true;
+              break;
+            }
+          }
+          if (!exists) {
+            lineMap.set(ratio, 0.08); // Main grid line opacity
+          }
+        }
+
+        // Draw unique lines
+        if (settings.showGrid || settings.showAuxGrid) {
+          const auxColor = currentSettings.auxGridColor;
+
+          lineMap.forEach((opacity, ratio) => {
+            const isAux = opacity === 0.2;
+            if (isAux && !settings.showAuxGrid) return;
+            if (!isAux && !settings.showGrid) return;
+
+            const lineY = y - currentMeasureHeight * ratio;
+            const targetOpacity = isAux ? currentSettings.auxGridOpacity : currentSettings.gridOpacity;
+            
+            let strokeColor = theme === 'light' 
+              ? `rgba(0, 0, 0, ${targetOpacity * 0.4})`
+              : `rgba(255, 255, 255, ${targetOpacity})`;
+
+            if (isAux) {
+              if (auxColor === 'green') strokeColor = `rgba(34, 197, 94, ${targetOpacity * (theme === 'light' ? 0.8 : 1.5)})`;
+              else if (auxColor === 'blue') strokeColor = `rgba(59, 130, 246, ${targetOpacity * (theme === 'light' ? 0.8 : 1.5)})`;
+              else if (auxColor === 'red') strokeColor = `rgba(239, 68, 68, ${targetOpacity * (theme === 'light' ? 0.8 : 1.5)})`;
+            }
+
+            ctx.strokeStyle = strokeColor;
+            ctx.beginPath();
+            ctx.moveTo(50, lineY);
+            ctx.lineTo(currentX, lineY);
+            ctx.stroke();
+          });
         }
 
         const measureLane = zoomedLayout.find(l => l.type === 'measure');
         if (measureLane) {
-          ctx.fillText(m.toString(), 50 + measureLane.width / 2, y - 5);
+          if (settings.showMeasureLine) {
+            ctx.strokeStyle = theme === 'light' 
+              ? `rgba(0, 0, 0, ${currentSettings.measureLineOpacity * 0.4})` 
+              : `rgba(255, 255, 255, ${currentSettings.measureLineOpacity})`;
+            ctx.beginPath();
+            ctx.moveTo(50, y);
+            ctx.lineTo(50 + measureLane.width, y);
+            ctx.stroke();
+          }
+
+          if (settings.showMeasureNumber) {
+            ctx.fillStyle = theme === 'light' ? '#3f3f46' : '#a1a1aa';
+            ctx.font = '10px Inter';
+            ctx.textAlign = 'center';
+            ctx.fillText(m.toString(), 50 + measureLane.width / 2, y - 5);
+          }
+        }
+      }
+
+      // 2.3 Draw Time Edit Selection (F1 tool overlay)
+      if (activeToolRef.current === 'time') {
+        let selectionStart = null;
+        let selectionEnd = null;
+
+        if (isTimeDragging.current && timeDragStart.current !== null && timeDragCurrent.current !== null) {
+          selectionStart = Math.min(timeDragStart.current, timeDragCurrent.current);
+          selectionEnd = Math.max(timeDragStart.current, timeDragCurrent.current);
+        } else if (timeSelection) {
+          selectionStart = timeSelection.start;
+          selectionEnd = timeSelection.end;
+        }
+
+        if (selectionStart !== null && selectionEnd !== null) {
+          const yStart = -(selectionStart * currentMeasureHeight);
+          const yEnd = -(selectionEnd * currentMeasureHeight);
+          const yTop = Math.min(yStart, yEnd);
+          const yBottom = Math.max(yStart, yEnd);
+
+          ctx.save();
+          ctx.fillStyle = 'rgba(167, 139, 250, 0.18)'; // Premium elegant translucent violet
+          ctx.fillRect(50, yTop, currentX - 50, yBottom - yTop);
+
+          // Dot border styling
+          ctx.strokeStyle = '#a78bfa';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([6, 4]);
+
+          ctx.beginPath();
+          ctx.moveTo(50, yStart);
+          ctx.lineTo(currentX, yStart);
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.moveTo(50, yEnd);
+          ctx.lineTo(currentX, yEnd);
+          ctx.stroke();
+
+          ctx.restore();
         }
       }
 
       // 2.5 Draw Long Note Bodies
       if (currentBmsData && currentLongNotePairs.length > 0) {
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
         currentLongNotePairs.forEach(pair => {
           const { start, end } = pair;
+          const isSelected = selectedNotesRef.current.includes(start.id) || selectedNotesRef.current.includes(end.id);
+          
+          if (isSelected) {
+            ctx.fillStyle = 'rgba(239, 68, 68, 0.6)';
+          } else {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+          }
+          
           const startMeasureLen = currentBmsData.measureLengths[start.measure] ?? 1;
           const endMeasureLen = currentBmsData.measureLengths[end.measure] ?? 1;
           
@@ -390,6 +1197,41 @@ function App() {
         });
       }
 
+      // 2.6 Draw Dragging Long Note Preview (Write Mode)
+      if (isDrawingLongNote.current && writeStartBmsPos.current && writeCurrentBmsPos.current && currentBmsData) {
+        const start = writeStartBmsPos.current;
+        const end = writeCurrentBmsPos.current;
+
+        const startMeasureLen = currentBmsData.measureLengths[start.measure] ?? 1;
+        const endMeasureLen = currentBmsData.measureLengths[end.measure] ?? 1;
+
+        const startAbsolutePos = currentMeasureOffsets.offsets[start.measure] + start.position * startMeasureLen;
+        const endAbsolutePos = currentMeasureOffsets.offsets[end.measure] + end.position * endMeasureLen;
+
+        const startY = -startAbsolutePos * currentMeasureHeight;
+        const endY = -endAbsolutePos * currentMeasureHeight;
+
+        let targetLaneIndex = getTargetLaneIndex(zoomedLayout, start.channel, start.index);
+        if (targetLaneIndex !== -1) {
+          let laneX = 50;
+          for (let i = 0; i < targetLaneIndex; i++) laneX += zoomedLayout[i].width;
+          const lWidth = zoomedLayout[targetLaneIndex].width;
+
+          const yTop = Math.min(startY, endY);
+          const yBottom = Math.max(startY, endY);
+
+          // 드래그 중인 롱노트 몸통 프리뷰는 반투명한 노란색
+          ctx.fillStyle = 'rgba(234, 179, 8, 0.4)';
+          ctx.fillRect(laneX + 1, yTop, lWidth - 2, yBottom - yTop);
+
+          // 머리/꼬리 임시 박스
+          const noteHeight = settingsRef.current.noteHeight ?? 12;
+          ctx.fillStyle = 'rgba(234, 179, 8, 0.7)';
+          ctx.fillRect(laneX + 2, yTop - noteHeight, lWidth - 4, noteHeight);
+          ctx.fillRect(laneX + 2, yBottom - noteHeight, lWidth - 4, noteHeight);
+        }
+      }
+
       // 3. Draw Notes
       if (currentBmsData) {
         currentBmsData.notes.forEach(note => {
@@ -406,29 +1248,109 @@ function App() {
             const lWidth = zoomedLayout[targetLaneIndex].width;
             
             // Align UP from the measure line. Y goes UP in canvas logic (negative).
-            const noteHeight = 12; // Increased note height
+            const currentSettings = settingsRef.current;
+            const noteHeight = currentSettings.noteHeight ?? 12;
             const noteY = y - noteHeight; // Draw upwards from the baseline
 
+            const noteSkin = currentSettings.noteSkin;
             const isSelected = selectedNotesRef.current.includes(note.id);
             const isOverlapping = currentOverlapping.has(note.id);
-            if (isOverlapping) {
-              ctx.fillStyle = '#ffffaa';
-              ctx.strokeStyle = '#bbbb00';
-            } else if (isSelected) {
-              ctx.fillStyle = '#ffaaaa';
-              ctx.strokeStyle = '#ff0000';
-            } else {
-              ctx.fillStyle = '#f4f4f5';
-              ctx.strokeStyle = '#000000';
-            }
-            ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
-            ctx.strokeRect(laneX + 1, noteY, lWidth - 2, noteHeight);
             
-            ctx.fillStyle = '#000000';
-            ctx.font = '10px Inter'; // Increased font size
+            const isInvisible = (note.channel >= 0x31 && note.channel <= 0x39) || (note.channel >= 0x41 && note.channel <= 0x49);
+            const isMine = (note.channel >= 0xD1 && note.channel <= 0xD9) || (note.channel >= 0xE1 && note.channel <= 0xE9);
+            
+            let laneKey = '';
+            if (targetLaneIndex !== -1) {
+              const lane = zoomedLayout[targetLaneIndex];
+              if (lane.type === 'bgm') {
+                laneKey = 'B';
+              } else {
+                laneKey = lane.name;
+              }
+            }
+            const customColors = currentSettings.customLaneColors || {};
+            const laneColor = customColors[laneKey] || { bg: '#f4f4f5', bgAlpha: 1.0, fg: '#000000', fgAlpha: 1.0 };
+
+            let baseColor = laneColor.bg;
+            let baseAlpha = laneColor.bgAlpha ?? 1.0;
+            let borderColor = '#000000';
+            let textColor = laneColor.fg;
+            let textAlpha = laneColor.fgAlpha ?? 1.0;
+            
+            if (isOverlapping) {
+              const overlapColor = customColors['OVERLAP'] || { bg: '#ffffaa', bgAlpha: 1.0, fg: '#bbbb00', fgAlpha: 1.0 };
+              baseColor = overlapColor.bg;
+              baseAlpha = overlapColor.bgAlpha ?? 1.0;
+              borderColor = overlapColor.fg;
+              textColor = overlapColor.fg;
+              textAlpha = overlapColor.fgAlpha ?? 1.0;
+            } else if (isSelected) {
+              const selectColor = customColors['SELECT'] || { bg: '#ffaaaa', bgAlpha: 1.0, fg: '#ff0000', fgAlpha: 1.0 };
+              baseColor = selectColor.bg;
+              baseAlpha = selectColor.bgAlpha ?? 1.0;
+              borderColor = selectColor.fg;
+              textColor = selectColor.fg;
+              textAlpha = selectColor.fgAlpha ?? 1.0;
+            } else if (isMine) {
+              const mineColor = customColors['MINE'] || { bg: '#991b1b', bgAlpha: 1.0, fg: '#ffffff', fgAlpha: 1.0 };
+              baseColor = mineColor.bg;
+              baseAlpha = mineColor.bgAlpha ?? 1.0;
+              borderColor = '#7f1d1d';
+              textColor = mineColor.fg;
+              textAlpha = mineColor.fgAlpha ?? 1.0;
+            } else if (isInvisible) {
+              const invColor = customColors['INV'] || { bg: '#f4f4f5', bgAlpha: 0.4, fg: '#000000', fgAlpha: 0.4 };
+              baseColor = invColor.bg;
+              baseAlpha = invColor.bgAlpha ?? 0.4;
+              textColor = invColor.fg;
+              textAlpha = invColor.fgAlpha ?? 0.4;
+            }
+
+            ctx.save();
+            ctx.globalAlpha = baseAlpha;
+
+            ctx.fillStyle = baseColor;
+            ctx.strokeStyle = borderColor;
+
+            if (noteSkin === 'gradient') {
+              ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
+              const grad = ctx.createLinearGradient(laneX, noteY, laneX, noteY + noteHeight);
+              grad.addColorStop(0, 'rgba(255, 255, 255, 0.4)');
+              grad.addColorStop(1, 'rgba(0, 0, 0, 0.2)');
+              ctx.fillStyle = grad;
+              ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
+              ctx.strokeRect(laneX + 1, noteY, lWidth - 2, noteHeight);
+            } else if (noteSkin === '3d') {
+              ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
+              
+              // Draw top bevel white highlights
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+              ctx.fillRect(laneX + 1, noteY, lWidth - 2, 2);
+              ctx.fillRect(laneX + 1, noteY, 2, noteHeight);
+              
+              // Draw bottom bevel dark shadows
+              ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+              ctx.fillRect(laneX + 1, noteY + noteHeight - 2, lWidth - 2, 2);
+              ctx.fillRect(laneX + lWidth - 3, noteY, 2, noteHeight);
+              
+              ctx.strokeRect(laneX + 1, noteY, lWidth - 2, noteHeight);
+            } else {
+              ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
+              ctx.strokeRect(laneX + 1, noteY, lWidth - 2, noteHeight);
+            }
+            
+            ctx.globalAlpha = textAlpha;
+            ctx.fillStyle = textColor;
+            ctx.font = `${currentSettings.fontSize ?? 10}px Inter`;
             ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            
             let displayText = encodeBmsValue(note.value, currentUseBase62);
-            if (note.channel === 0x03) {
+            if (currentSettings.showKeySoundFileName && currentBmsData.wavs[note.value]) {
+              const fullWav = currentBmsData.wavs[note.value];
+              const baseWav = fullWav.split('.')[0] || fullWav;
+              displayText = baseWav.length > 5 ? baseWav.substring(0, 5) : baseWav;
+            } else if (note.channel === 0x03) {
               displayText = note.value.toString();
             } else if (note.channel === 0x08) {
               const bpmVal = currentBmsData.bpms[note.value];
@@ -440,7 +1362,9 @@ function App() {
               const scrollVal = currentBmsData.scrolls[note.value];
               if (scrollVal !== undefined) displayText = scrollVal.toString();
             }
-            ctx.fillText(displayText, laneX + lWidth / 2, noteY + 10);
+            ctx.fillText(displayText, laneX + lWidth / 2, noteY + noteHeight / 2);
+            
+            ctx.restore();
           }
         });
       }
@@ -465,22 +1389,35 @@ function App() {
         }
 
         if (found) {
-          const noteHeight = 12;
+          const noteHeight = settingsRef.current.noteHeight ?? 12;
           const noteY = y - noteHeight;
-          ctx.globalAlpha = 0.5;
-          ctx.fillStyle = '#ffaaaa';
+          
+          let laneKey = '';
+          if (hoverPos.lane.type === 'bgm') {
+            laneKey = 'B';
+          } else {
+            laneKey = hoverPos.lane.name;
+          }
+          const customColors = settingsRef.current.customLaneColors || {};
+          const laneColor = customColors[laneKey] || { bg: '#f4f4f5', bgAlpha: 1.0, fg: '#000000', fgAlpha: 1.0 };
+
+          ctx.save();
+          ctx.globalAlpha = (laneColor.bgAlpha ?? 1.0) * 0.5;
+          ctx.fillStyle = laneColor.bg;
           ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
           ctx.strokeStyle = '#ff0000';
           ctx.strokeRect(laneX + 1, noteY, lWidth - 2, noteHeight);
-          ctx.globalAlpha = 1.0;
           
           // Draw the current note value on the ghost note
           const currentNoteVal = currentNoteValueRef.current;
           let displayText = encodeBmsValue(currentNoteVal, currentUseBase62);
-          ctx.fillStyle = '#000000';
-          ctx.font = '10px Inter';
+          ctx.globalAlpha = (laneColor.fgAlpha ?? 1.0) * 0.5;
+          ctx.fillStyle = laneColor.fg;
+          ctx.font = `${settingsRef.current.fontSize ?? 10}px Inter`;
           ctx.textAlign = 'center';
-          ctx.fillText(displayText, laneX + lWidth / 2, noteY + 10);
+          ctx.textBaseline = 'middle';
+          ctx.fillText(displayText, laneX + lWidth / 2, noteY + noteHeight / 2);
+          ctx.restore();
         }
       }
 
@@ -503,28 +1440,50 @@ function App() {
 
       // 4. Draw Header Background (Sticky Top)
       ctx.restore();
-      ctx.save();
-      ctx.translate(-scrollX.current, 0); // Top sticky area
-      
-      ctx.fillStyle = 'rgba(10, 10, 12, 0.9)';
-      ctx.fillRect(scrollX.current, 0, canvas.width + scrollX.current, 24);
-      
-      // Header Bottom Border
-      ctx.strokeStyle = '#333333';
-      ctx.beginPath();
-      ctx.moveTo(scrollX.current, 24);
-      ctx.lineTo(canvas.width + scrollX.current, 24);
-      ctx.stroke();
 
-      let headerX = 50;
-      ctx.fillStyle = '#a1a1aa';
-      ctx.font = '10px Inter';
-      ctx.textAlign = 'center';
+      // 3.5 Draw Red Judgment Line (Red line)
+      ctx.save();
+      ctx.strokeStyle = '#ef4444'; // Red-500
+      ctx.lineWidth = 3;
+      ctx.beginPath();
       
-      zoomedLayout.forEach((lane) => {
-        ctx.fillText(lane.name, headerX + lane.width / 2, 16);
-        headerX += lane.width;
-      });
+      const judgmentLineStartX = Math.max(50, 50 - scrollX.current);
+      const judgmentLineEndX = Math.min(canvas.width, currentX - scrollX.current);
+      
+      if (judgmentLineStartX < judgmentLineEndX) {
+        ctx.moveTo(judgmentLineStartX, canvas.height - 80);
+        ctx.lineTo(judgmentLineEndX, canvas.height - 80);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      const headerHeight = settings.showColumnHeader ? 24 : 0;
+
+      if (settings.showColumnHeader) {
+        ctx.save();
+        ctx.translate(-scrollX.current, 0); // Top sticky area
+        
+        ctx.fillStyle = 'rgba(10, 10, 12, 0.9)';
+        ctx.fillRect(scrollX.current, 0, canvas.width + scrollX.current, 24);
+        
+        // Header Bottom Border
+        ctx.strokeStyle = '#333333';
+        ctx.beginPath();
+        ctx.moveTo(scrollX.current, 24);
+        ctx.lineTo(canvas.width + scrollX.current, 24);
+        ctx.stroke();
+
+        let headerX = 50;
+        ctx.fillStyle = '#a1a1aa';
+        ctx.font = '10px Inter';
+        ctx.textAlign = 'center';
+        
+        zoomedLayout.forEach((lane) => {
+          ctx.fillText(lane.name, headerX + lane.width / 2, 16);
+          headerX += lane.width;
+        });
+        ctx.restore();
+      }
       
       // 5. Draw Visual Scrollbars
       ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset to screen coordinates
@@ -533,22 +1492,23 @@ function App() {
       const maxScrollX = maxScrollXRef.current;
 
       // Vertical Scrollbar
-      if (maxScrollY > 0) {
+      if (maxScrollY > MIN_SCROLL_Y) {
         const scrollbarWidth = 10;
-        const trackHeight = canvas.height - 24; // Below top header
-        const viewRatio = Math.min(1, canvas.height / totalHeight);
+        const trackHeight = canvas.height - headerHeight; // Below top header (if visible)
+        const viewRatio = Math.min(1, canvas.height / (totalHeight - MIN_SCROLL_Y));
         const thumbHeight = Math.max(30, trackHeight * viewRatio);
         
-        // In our coordinate system, scrollY = 0 is bottom (measure 0).
-        // Thumb should be at the bottom when scrollY = 0.
-        const scrollRatio = scrollY.current / maxScrollY;
-        const thumbY = 24 + (1 - scrollRatio) * (trackHeight - thumbHeight);
+        // In our coordinate system, scrollY = MIN_SCROLL_Y is bottom (measure 0 bottom padding).
+        // Thumb should be at the bottom when scrollY = MIN_SCROLL_Y.
+        const scrollRange = maxScrollY - MIN_SCROLL_Y;
+        const scrollRatio = scrollRange > 0 ? (scrollY.current - MIN_SCROLL_Y) / scrollRange : 0;
+        const thumbY = headerHeight + (1 - scrollRatio) * (trackHeight - thumbHeight);
 
         const rectX = canvas.width - scrollbarWidth + 2;
         vThumbRect.current = { x: rectX, y: thumbY, w: scrollbarWidth - 4, h: thumbHeight };
 
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-        ctx.fillRect(canvas.width - scrollbarWidth, 24, scrollbarWidth, trackHeight);
+        ctx.fillRect(canvas.width - scrollbarWidth, headerHeight, scrollbarWidth, trackHeight);
 
         ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
         ctx.beginPath();
@@ -590,20 +1550,68 @@ function App() {
         hThumbRect.current = { x: 0, y: 0, w: 0, h: 0 };
       }
 
+      // Autoscroll visual anchor and arrow guide drawing
+      if (isAutoscrolling.current && autoscrollAnchor.current && canvasRef.current) {
+        const rect = canvasRef.current.getBoundingClientRect();
+        const anchorX = autoscrollAnchor.current.x - rect.left;
+        const anchorY = autoscrollAnchor.current.y - rect.top;
+
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+        // 1. Semi-transparent outer ring guide
+        ctx.beginPath();
+        ctx.arc(anchorX, anchorY, 16, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
+        ctx.stroke();
+
+        // 2. Central anchor dot
+        ctx.beginPath();
+        ctx.arc(anchorX, anchorY, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        ctx.fill();
+
+        // 3. Dynamic arrow guide line to current mouse position
+        if (autoscrollCurrent.current) {
+          const curX = autoscrollCurrent.current.x - rect.left;
+          const curY = autoscrollCurrent.current.y - rect.top;
+          const dx = curX - anchorX;
+          const dy = curY - anchorY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          if (dist > 15) {
+            ctx.beginPath();
+            ctx.moveTo(anchorX, anchorY);
+            ctx.lineTo(curX, curY);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 3]);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.arc(curX, curY, 3.5, 0, Math.PI * 2);
+            ctx.fillStyle = '#ff007f'; // Vivid neon rose
+            ctx.fill();
+          }
+        }
+        ctx.restore();
+      }
+
       ctx.restore();
     } catch (e) {
       console.error("Render Error:", e);
-    } finally {
-      renderRequested.current = false;
     }
   };
 
-  const requestRender = () => {
+  function requestRender() {
     if (!renderRequested.current) {
       renderRequested.current = true;
       requestAnimationFrame(drawGridAndNotes);
     }
-  };
+  }
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -617,9 +1625,18 @@ function App() {
     };
 
     window.addEventListener('resize', resizeCanvas);
+    
+    const resizeObserver = new ResizeObserver(() => {
+      resizeCanvas();
+    });
+    resizeObserver.observe(container);
+
     resizeCanvas();
 
-    return () => window.removeEventListener('resize', resizeCanvas);
+    return () => {
+      window.removeEventListener('resize', resizeCanvas);
+      resizeObserver.disconnect();
+    };
   }, []); // Only bind once, state is handled via refs
 
   useEffect(() => {
@@ -628,10 +1645,33 @@ function App() {
 
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
+      const currentSettings = settingsRef.current;
+      const scrollSize = currentSettings.wheelScrollSize;
+      
+      let delta = e.deltaY;
+      if (currentSettings.scrollDirection === 'normal') {
+        delta = -delta;
+      }
+      
       if (e.shiftKey) {
-        scrollX.current = Math.min(maxScrollXRef.current, Math.max(0, scrollX.current + e.deltaY));
+        scrollX.current = Math.min(maxScrollXRef.current, Math.max(0, scrollX.current + delta));
       } else {
-        scrollY.current = Math.min(maxScrollYRef.current, Math.max(0, scrollY.current + e.deltaY));
+        if (scrollSize !== 'pixel') {
+          const sign = Math.sign(delta);
+          const currentMeasureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
+          
+          if (scrollSize === 'page') {
+            const canvas = canvasRef.current;
+            const pageScroll = canvas ? canvas.height * 0.8 : 400;
+            delta = sign * pageScroll;
+          } else {
+            const fraction = parseFloat(scrollSize);
+            if (!isNaN(fraction)) {
+              delta = sign * fraction * currentMeasureHeight;
+            }
+          }
+        }
+        scrollY.current = Math.min(maxScrollYRef.current, Math.max(MIN_SCROLL_Y, scrollY.current + delta));
       }
       requestRender();
     };
@@ -647,29 +1687,30 @@ function App() {
   const selectionBoxCurrent = useRef<{ x: number, y: number } | null>(null);
   
   const hoverBmsPos = useRef<{ measure: number, position: number, lane: any } | null>(null);
+
+  // 쓰기 모드에서의 롱노트 드래그 관련 Ref
+  const isDrawingLongNote = useRef(false);
+  const writeStartBmsPos = useRef<{ measure: number; position: number; lane: any; channel: number; index: number } | null>(null);
+  const writeCurrentBmsPos = useRef<{ measure: number; position: number; lane: any; channel: number; index: number } | null>(null);
   
   // To track offsets for dragging multiple notes
   const dragStartBmsPos = useRef<{ measure: number, position: number, channel: number, index: number } | null>(null);
+  const dragStartAbsPos = useRef<number>(0);
   const dragNoteInitialState = useRef<{ id: string, initialMeasure: number, initialPosition: number, initialChannel: number, initialIndex: number }[]>([]);
 
   const dragNoteDidMove = useRef(false);
+
+  // Panning (Middle Click Drag) State
+  const isPanning = useRef(false);
+  const panStartX = useRef(0);
+  const panStartY = useRef(0);
+  const panStartScrollX = useRef(0);
+  const panStartScrollY = useRef(0);
 
   // Keyboard Shortcuts for Grid Snap, Undo/Redo, and Note Movement
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-
-      if (e.key === 'z' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
-        e.preventDefault();
-        undo();
-        return;
-      }
-      
-      if ((e.key === 'y' && (e.ctrlKey || e.metaKey)) || (e.key === 'z' && (e.ctrlKey || e.metaKey) && e.shiftKey)) {
-        e.preventDefault();
-        redo();
-        return;
-      }
 
       if (e.key === 'PageUp') {
         e.preventDefault();
@@ -677,12 +1718,6 @@ function App() {
       } else if (e.key === 'PageDown') {
         e.preventDefault();
         setGridSnap(e.shiftKey ? Math.max(1, gridSnap - 1) : Math.max(1, Math.floor(gridSnap / 2)));
-      } else if (e.key === 'Delete') {
-        if (selectedNotes.length > 0) {
-           removeNotes(selectedNotes);
-           setSelectedNotes([]);
-           commitHistory();
-        }
       } else if (e.key.startsWith('Arrow') && selectedNotes.length > 0 && bmsDataRef.current) {
         e.preventDefault();
         
@@ -690,15 +1725,25 @@ function App() {
         let pDiff = 0;
         let laneDiff = 0;
         
-        if (e.key === 'ArrowUp') pDiff = 1 / gridSnap;
-        else if (e.key === 'ArrowDown') pDiff = -1 / gridSnap;
+        if (e.key === 'ArrowUp' && !lockVerticalPositionRef.current) pDiff = 1 / gridSnap;
+        else if (e.key === 'ArrowDown' && !lockVerticalPositionRef.current) pDiff = -1 / gridSnap;
         else if (e.key === 'ArrowLeft') laneDiff = -1;
         else if (e.key === 'ArrowRight') laneDiff = 1;
 
         if (mDiff === 0 && pDiff === 0 && laneDiff === 0) return;
 
         const getLaneCategory = (channel: number) => {
-          if (channel === 0x01 || (channel >= 0x11 && channel <= 0x19) || (channel >= 0x21 && channel <= 0x29) || channel === 0x16 || channel === 0x26) return 'keysound';
+          if (channel === 0x01 || 
+              (channel >= 0x11 && channel <= 0x19) || 
+              (channel >= 0x21 && channel <= 0x29) || 
+              (channel >= 0x51 && channel <= 0x59) || 
+              (channel >= 0x61 && channel <= 0x69) || 
+              channel === 0x16 || 
+              channel === 0x26 ||
+              (channel >= 0x31 && channel <= 0x39) ||
+              (channel >= 0x41 && channel <= 0x49) ||
+              (channel >= 0xD1 && channel <= 0xD9) ||
+              (channel >= 0xE1 && channel <= 0xE9)) return 'keysound';
           if (channel === 0x04 || channel === 0x06 || channel === 0x0A) return 'video';
           return 'other';
         };
@@ -744,15 +1789,19 @@ function App() {
         const notesToMove = bmsDataRef.current.notes.filter(n => selectedNotes.includes(n.id));
 
         for (const dn of notesToMove) {
-          let newMeasure = dn.measure + mDiff;
-          let newPosition = dn.position + pDiff;
+          let newMeasure = dn.measure;
+          let newPosition = dn.position;
           
-          while (newPosition >= 1) { newPosition -= 1; newMeasure += 1; }
-          while (newPosition < 0) { newPosition += 1; newMeasure -= 1; }
-          if (newMeasure < 0) newMeasure = 0;
-          
-          newPosition = Math.round(newPosition * gridSnap) / gridSnap;
-          if (newPosition >= 1) { newPosition = 0; newMeasure += 1; }
+          if (pDiff !== 0 || mDiff !== 0) {
+            newMeasure = dn.measure + mDiff;
+            newPosition = dn.position + pDiff;
+            while (newPosition >= 1) { newPosition -= 1; newMeasure += 1; }
+            while (newPosition < 0) { newPosition += 1; newMeasure -= 1; }
+            if (newMeasure < 0) newMeasure = 0;
+            
+            newPosition = Math.round(newPosition * gridSnap) / gridSnap;
+            if (newPosition >= 1) { newPosition = 0; newMeasure += 1; }
+          }
 
           const updates: any = { measure: newMeasure, position: newPosition };
           
@@ -761,7 +1810,22 @@ function App() {
             const noteInitialLaneIndex = getTargetLaneIndex(activeLayout, dn.channel, dn.index);
             if (noteInitialLaneIndex !== -1) {
               const newLane = activeLayout[noteInitialLaneIndex + validLaneIndexDiff];
-              updates.channel = newLane.channel || 0x01;
+              const targetBase = newLane.channel || 0x01;
+              
+              const getShiftedChannel = (origChan: number, baseChan: number): number => {
+                let offset = 0;
+                if (origChan >= 0x51 && origChan <= 0x59) offset = 0x40;
+                else if (origChan >= 0x61 && origChan <= 0x69) offset = 0x40;
+                else if (origChan >= 0x31 && origChan <= 0x39) offset = 0x20;
+                else if (origChan >= 0x41 && origChan <= 0x49) offset = 0x20;
+                else if (origChan >= 0xD1 && origChan <= 0xD9) offset = 0xC0;
+                else if (origChan >= 0xE1 && origChan <= 0xE9) offset = 0xC0;
+                
+                if (offset === 0 || baseChan === 0x01) return baseChan;
+                return baseChan + offset;
+              };
+              
+              updates.channel = getShiftedChannel(dn.channel, targetBase);
               if (updates.channel === 0x01) {
                 updates.index = parseInt(newLane.name.substring(1)) - 1;
               }
@@ -786,14 +1850,25 @@ function App() {
       const canvas = canvasRef.current;
       if (!canvas) return;
 
+      if (isPanning.current) {
+        const dx = e.clientX - panStartX.current;
+        const dy = e.clientY - panStartY.current;
+        scrollX.current = Math.min(maxScrollXRef.current, Math.max(0, panStartScrollX.current - dx));
+        scrollY.current = Math.min(maxScrollYRef.current, Math.max(MIN_SCROLL_Y, panStartScrollY.current + dy));
+        requestRender();
+        return;
+      }
+
       if (isDraggingV.current) {
         const deltaY = e.clientY - dragStartY.current;
-        const trackHeight = canvas.height - 24;
+        const headerHeight = viewSettingsRef.current.showColumnHeader ? 24 : 0;
+        const trackHeight = canvas.height - headerHeight;
         const vRect = vThumbRect.current;
         const draggableRange = trackHeight - vRect.h;
         if (draggableRange > 0) {
-          const scrollDelta = -(deltaY / draggableRange) * maxScrollYRef.current;
-          scrollY.current = Math.min(maxScrollYRef.current, Math.max(0, initialScrollY.current + scrollDelta));
+          const scrollRange = maxScrollYRef.current - MIN_SCROLL_Y;
+          const scrollDelta = -(deltaY / draggableRange) * scrollRange;
+          scrollY.current = Math.min(maxScrollYRef.current, Math.max(MIN_SCROLL_Y, initialScrollY.current + scrollDelta));
           requestRender();
         }
         return;
@@ -815,6 +1890,30 @@ function App() {
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
+
+      if (isTimeDragging.current && timeDragStart.current !== null) {
+        const originY = canvas.height + scrollY.current;
+        const ctxY = y - originY;
+        const measureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
+        const absolutePosition = -ctxY / measureHeight;
+        const snappedPosition = getSnappedAbsTime(absolutePosition);
+        timeDragCurrent.current = snappedPosition;
+        requestRender();
+        return;
+      }
+
+      if (isDrawingLongNote.current && writeStartBmsPos.current) {
+        const bmsPos = getBmsPosition(x, y);
+        if (bmsPos) {
+          writeCurrentBmsPos.current = {
+            ...bmsPos,
+            channel: writeStartBmsPos.current.channel,
+            index: writeStartBmsPos.current.index
+          };
+          requestRender();
+        }
+        return;
+      }
 
       if (isSelectingBox.current && selectionBoxStart.current) {
         selectionBoxCurrent.current = { x, y };
@@ -849,17 +1948,48 @@ function App() {
         }
         const measureStart = measureOffsets.offsets[targetMeasure];
         const measureLen = bmsDataRef.current?.measureLengths?.[targetMeasure] ?? 1;
-        let targetPos = (absolutePosition - measureStart) / measureLen;
+        const offsetVal = absolutePosition - measureStart;
         
         const snap = gridSnapRef.current;
-        targetPos = Math.round(targetPos * snap) / snap;
-        if (targetPos >= 1) { targetMeasure += 1; targetPos = 0; }
+        let snappedOffset = Math.round(offsetVal * snap) / snap;
+        let targetPos = 0;
         
-        const mDiff = targetMeasure - dragStartBmsPos.current.measure;
-        const pDiff = targetPos - dragStartBmsPos.current.position;
+        if (snappedOffset >= measureLen - 1e-9) {
+          targetMeasure += 1;
+          targetPos = 0;
+        } else {
+          const finalMeasureLen = bmsDataRef.current?.measureLengths?.[targetMeasure] ?? 1;
+          targetPos = snappedOffset / finalMeasureLen;
+        }
+        
+        let mDiff = targetMeasure - dragStartBmsPos.current.measure;
+        let pDiff = targetPos - dragStartBmsPos.current.position;
+
+        if (lockVerticalPositionRef.current) {
+          mDiff = 0;
+          pDiff = 0;
+        } else {
+          const dragStartAbs = dragStartAbsPos.current;
+          const absDiff = Math.abs(absolutePosition - dragStartAbs);
+          const threshold = (bmsDataRef.current?.measureLengths?.[dragStartBmsPos.current.measure] ?? 1) / snap;
+          if (absDiff < threshold) {
+            mDiff = 0;
+            pDiff = 0;
+          }
+        }
 
         const getLaneCategory = (channel: number) => {
-          if (channel === 0x01 || (channel >= 0x11 && channel <= 0x19) || (channel >= 0x21 && channel <= 0x29) || channel === 0x16 || channel === 0x26) return 'keysound';
+          if (channel === 0x01 || 
+              (channel >= 0x11 && channel <= 0x19) || 
+              (channel >= 0x21 && channel <= 0x29) || 
+              (channel >= 0x51 && channel <= 0x59) || 
+              (channel >= 0x61 && channel <= 0x69) || 
+              channel === 0x16 || 
+              channel === 0x26 ||
+              (channel >= 0x31 && channel <= 0x39) ||
+              (channel >= 0x41 && channel <= 0x49) ||
+              (channel >= 0xD1 && channel <= 0xD9) ||
+              (channel >= 0xE1 && channel <= 0xE9)) return 'keysound';
           if (channel === 0x04 || channel === 0x06 || channel === 0x0A) return 'video';
           return 'other';
         };
@@ -903,15 +2033,28 @@ function App() {
         }
 
         dragNoteInitialState.current.forEach(dn => {
-          let newMeasure = dn.initialMeasure + mDiff;
-          let newPosition = dn.initialPosition + pDiff;
+          let newMeasure = dn.initialMeasure;
+          let newPosition = dn.initialPosition;
           
-          while (newPosition >= 1) { newPosition -= 1; newMeasure += 1; }
-          while (newPosition < 0) { newPosition += 1; newMeasure -= 1; }
-          if (newMeasure < 0) newMeasure = 0;
-          
-          newPosition = Math.round(newPosition * snap) / snap;
-          if (newPosition >= 1) { newPosition = 0; newMeasure += 1; }
+          if (pDiff !== 0 || mDiff !== 0) {
+            newMeasure = dn.initialMeasure + mDiff;
+            newPosition = dn.initialPosition + pDiff;
+            while (newPosition >= 1) { newPosition -= 1; newMeasure += 1; }
+            while (newPosition < 0) { newPosition += 1; newMeasure -= 1; }
+            if (newMeasure < 0) newMeasure = 0;
+            
+            // Snap newPosition based on absolute measure beat logic to avoid floating-point drift
+            const finalMeasureLen = bmsDataRef.current?.measureLengths?.[newMeasure] ?? 1;
+            const offsetVal = newPosition * finalMeasureLen;
+            let snappedOffset = Math.round(offsetVal * snap) / snap;
+            
+            if (snappedOffset >= finalMeasureLen - 1e-9) {
+              newMeasure += 1;
+              newPosition = 0;
+            } else {
+              newPosition = snappedOffset / finalMeasureLen;
+            }
+          }
 
           const updates: any = { measure: newMeasure, position: newPosition };
           
@@ -919,7 +2062,22 @@ function App() {
             const noteInitialLaneIndex = getTargetLaneIndex(activeLayout, dn.initialChannel, dn.initialIndex);
             if (noteInitialLaneIndex !== -1) {
               const newLane = activeLayout[noteInitialLaneIndex + validLaneIndexDiff];
-              updates.channel = newLane.channel || 0x01;
+              const targetBase = newLane.channel || 0x01;
+              
+              const getShiftedChannel = (origChan: number, baseChan: number): number => {
+                let offset = 0;
+                if (origChan >= 0x51 && origChan <= 0x59) offset = 0x40;
+                else if (origChan >= 0x61 && origChan <= 0x69) offset = 0x40;
+                else if (origChan >= 0x31 && origChan <= 0x39) offset = 0x20;
+                else if (origChan >= 0x41 && origChan <= 0x49) offset = 0x20;
+                else if (origChan >= 0xD1 && origChan <= 0xD9) offset = 0xC0;
+                else if (origChan >= 0xE1 && origChan <= 0xE9) offset = 0xC0;
+                
+                if (offset === 0 || baseChan === 0x01) return baseChan;
+                return baseChan + offset;
+              };
+              
+              updates.channel = getShiftedChannel(dn.initialChannel, targetBase);
               if (updates.channel === 0x01) {
                 updates.index = parseInt(newLane.name.substring(1)) - 1;
               }
@@ -932,8 +2090,175 @@ function App() {
     };
 
     const handleMouseUp = (e: MouseEvent) => {
+      if (isPanning.current) {
+        isPanning.current = false;
+        requestRender();
+        return;
+      }
+
       isDraggingV.current = false;
       isDraggingH.current = false;
+
+      if (isTimeDragging.current && timeDragStart.current !== null && timeDragCurrent.current !== null) {
+        isTimeDragging.current = false;
+        const start = Math.min(timeDragStart.current, timeDragCurrent.current);
+        const end = Math.max(timeDragStart.current, timeDragCurrent.current);
+        if (end - start > 0.005) {
+          setTimeSelection({ start, end });
+        } else {
+          setTimeSelection(null);
+        }
+        timeDragStart.current = null;
+        timeDragCurrent.current = null;
+        requestRender();
+        return;
+      }
+
+      if (isDrawingLongNote.current && writeStartBmsPos.current && bmsDataRef.current) {
+        isDrawingLongNote.current = false;
+        const start = writeStartBmsPos.current;
+        const end = writeCurrentBmsPos.current || start;
+
+        const startMeasureLen = bmsDataRef.current.measureLengths[start.measure] ?? 1;
+        const endMeasureLen = bmsDataRef.current.measureLengths[end.measure] ?? 1;
+
+        const startAbsolutePos = measureOffsets.offsets[start.measure] + start.position * startMeasureLen;
+        const endAbsolutePos = measureOffsets.offsets[end.measure] + end.position * endMeasureLen;
+
+        const actualChannel = start.channel;
+        const actualIndex = start.index;
+
+        const normalizeChannel = (ch: number) => {
+          if (ch >= 0x51 && ch <= 0x59) return ch - 0x40; // LN -> Normal
+          if (ch >= 0x61 && ch <= 0x69) return ch - 0x40;
+          if (ch >= 0x31 && ch <= 0x39) return ch - 0x20; // Invisible -> Normal
+          if (ch >= 0x41 && ch <= 0x49) return ch - 0x20;
+          if (ch >= 0xD1 && ch <= 0xD9) return ch - 0xC0; // Mine -> Normal
+          if (ch >= 0xE1 && ch <= 0xE9) return ch - 0xC0;
+          return ch;
+        };
+
+        if (Math.abs(endAbsolutePos - startAbsolutePos) < 1e-6) {
+          // 단노트 추가
+          let targetChannel = actualChannel;
+          const isPlayable = (actualChannel >= 0x11 && actualChannel <= 0x19) || 
+                             (actualChannel >= 0x21 && actualChannel <= 0x29);
+          if (isPlayable) {
+            if (e.shiftKey) {
+              targetChannel = actualChannel + 0xC0; // MINE
+            } else if (e.ctrlKey) {
+              targetChannel = actualChannel + 0x20; // INVISIBLE
+            }
+          }
+
+          addNote({
+            id: crypto.randomUUID(),
+            measure: start.measure,
+            position: start.position,
+            channel: targetChannel,
+            index: actualIndex,
+            value: currentNoteValueRef.current
+          });
+          commitHistory();
+          playPreviewSound(currentNoteValueRef.current);
+        } else {
+          // 롱노트 추가
+          const lowerNote = startAbsolutePos <= endAbsolutePos ? start : end;
+          const upperNote = startAbsolutePos <= endAbsolutePos ? end : start;
+
+          const isPlayable = (actualChannel >= 0x11 && actualChannel <= 0x19) || 
+                             (actualChannel >= 0x21 && actualChannel <= 0x29);
+
+          let startChannel = actualChannel;
+          let endChannel = actualChannel;
+          let startValue = currentNoteValueRef.current;
+          let endValue = currentNoteValueRef.current;
+
+          if (isPlayable) {
+            const lnObjStr = bmsDataRef.current.header.lnobj;
+            const lnObjVal = lnObjStr ? decodeBmsValue(lnObjStr, useBase62Ref.current) : 0;
+            if (lnObjVal > 0) {
+              // LNOBJ 방식
+              startChannel = actualChannel;
+              endChannel = actualChannel;
+              startValue = currentNoteValueRef.current;
+              endValue = lnObjVal;
+            } else {
+              // 전통적 LN 채널 방식
+              startChannel = actualChannel + 0x40;
+              endChannel = actualChannel + 0x40;
+              startValue = currentNoteValueRef.current;
+              endValue = currentNoteValueRef.current;
+            }
+          }
+
+          // 겹침 영역의 노트들을 키음 영역(BGM)으로 안전하게 대피 (BGM 채널 0x01 분산 분배)
+          const lowerAbs = Math.min(startAbsolutePos, endAbsolutePos);
+          const upperAbs = Math.max(startAbsolutePos, endAbsolutePos);
+
+          const overlappingUpdates: { id: string, updates: Partial<BmsNote> }[] = [];
+          bmsDataRef.current.notes.forEach(note => {
+            if (normalizeChannel(note.channel) === normalizeChannel(actualChannel) && 
+                (note.channel !== 0x01 || note.index === actualIndex)) {
+              const noteMeasureLen = bmsDataRef.current!.measureLengths[note.measure] ?? 1;
+              const noteAbs = measureOffsets.offsets[note.measure] + note.position * noteMeasureLen;
+              if (noteAbs >= lowerAbs - 1e-6 && noteAbs <= upperAbs + 1e-6) {
+                // BGM 인덱스 분배
+                let bgmIndex = 0;
+                if (note.channel >= 0x11 && note.channel <= 0x19) {
+                  bgmIndex = (note.channel - 0x11);
+                } else if (note.channel >= 0x21 && note.channel <= 0x29) {
+                  bgmIndex = (note.channel - 0x21) + 8;
+                } else if (note.channel >= 0x51 && note.channel <= 0x59) {
+                  bgmIndex = (note.channel - 0x51);
+                } else if (note.channel >= 0x61 && note.channel <= 0x69) {
+                  bgmIndex = (note.channel - 0x61) + 8;
+                } else {
+                  bgmIndex = note.index % 32;
+                }
+
+                overlappingUpdates.push({
+                  id: note.id,
+                  updates: {
+                    channel: 0x01,
+                    index: bgmIndex
+                  }
+                });
+              }
+            }
+          });
+
+          if (overlappingUpdates.length > 0) {
+            updateNotes(overlappingUpdates);
+          }
+
+          addNotes([
+            {
+              id: crypto.randomUUID(),
+              measure: lowerNote.measure,
+              position: lowerNote.position,
+              channel: startChannel,
+              index: actualIndex,
+              value: startValue
+            },
+            {
+              id: crypto.randomUUID(),
+              measure: upperNote.measure,
+              position: upperNote.position,
+              channel: endChannel,
+              index: actualIndex,
+              value: endValue
+            }
+          ]);
+          commitHistory();
+          playPreviewSound(currentNoteValueRef.current);
+        }
+
+        writeStartBmsPos.current = null;
+        writeCurrentBmsPos.current = null;
+        requestRender();
+        return;
+      }
       
       if (isSelectingBox.current && selectionBoxStart.current && selectionBoxCurrent.current && bmsDataRef.current) {
         const x1 = Math.min(selectionBoxStart.current.x, selectionBoxCurrent.current.x);
@@ -986,6 +2311,10 @@ function App() {
       dragStartBmsPos.current = null;
       dragNoteDidMove.current = false;
       
+      if (activeToolRef.current === 'select' && canvasRef.current) {
+        canvasRef.current.style.cursor = 'default';
+      }
+      
       requestRender();
     };
 
@@ -999,6 +2328,7 @@ function App() {
   }, [updateNote, setSelectedNotes]);
 
   const getBmsPosition = (x: number, y: number) => {
+    if (viewSettingsRef.current.showColumnHeader && y < 24) return null;
     const ctxX = x + scrollX.current;
     const originY = canvasRef.current!.height + scrollY.current;
     const ctxY = y - originY;
@@ -1028,17 +2358,70 @@ function App() {
     
     const measureStart = measureOffsets.offsets[targetMeasure];
     const measureLen = bmsDataRef.current?.measureLengths?.[targetMeasure] ?? 1;
-    let position = (absolutePosition - measureStart) / measureLen;
+    const offsetVal = absolutePosition - measureStart;
     
     const snap = gridSnapRef.current;
-    position = Math.round(position * snap) / snap;
-    if (position >= 1) { targetMeasure += 1; position = 0; }
-    if (targetMeasure < 0) return null;
+    let snappedOffset = Math.round(offsetVal * snap) / snap;
+    
+    let finalMeasure = targetMeasure;
+    let finalPos = 0;
+    
+    if (snappedOffset >= measureLen - 1e-9) {
+      finalMeasure = targetMeasure + 1;
+      finalPos = 0;
+    } else {
+      finalMeasure = targetMeasure;
+      const finalMeasureLen = bmsDataRef.current?.measureLengths?.[finalMeasure] ?? 1;
+      finalPos = snappedOffset / finalMeasureLen;
+    }
+    
+    if (finalMeasure < 0) return null;
+    return { measure: finalMeasure, position: finalPos, lane: targetLane };
+  };
 
-    return { measure: targetMeasure, position, lane: targetLane };
+  const playPreviewSound = (wavIndex: number) => {
+    if (!settingsRef.current.playNotePreview) return;
+    if (!bmsDataRef.current) return;
+    const filename = bmsDataRef.current.wavs[wavIndex];
+    if (filename) {
+      const currentBuffers = useEditorStore.getState().audioBuffers;
+      const buffer = findAudioBuffer(filename, currentBuffers);
+      if (buffer) {
+        const actx = getAudioContext();
+        if (actx.state === 'suspended') {
+          actx.resume().catch(err => console.error(err));
+        }
+        playSoloSound(buffer, actx.currentTime);
+      }
+    }
   };
 
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Eagerly resume AudioContext inside the user activation handler to prevent web audio latency
+    const actx = getAudioContext();
+    if (actx.state === 'suspended') {
+      actx.resume().catch(err => console.error(err));
+    }
+
+    if (e.button === 1) {
+      e.preventDefault();
+      const behavior = settingsRef.current.wheelClickBehavior;
+      if (behavior === 'drag') {
+        isPanning.current = true;
+        panStartX.current = e.clientX;
+        panStartY.current = e.clientY;
+        panStartScrollX.current = scrollX.current;
+        panStartScrollY.current = scrollY.current;
+      } else if (behavior === 'autoscroll') {
+        if (isAutoscrolling.current) {
+          stopAutoscroll();
+        } else {
+          startAutoscroll(e.clientX, e.clientY);
+        }
+      }
+      return;
+    }
+
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const x = e.clientX - rect.left;
@@ -1061,6 +2444,102 @@ function App() {
     }
 
     if (!bmsDataRef.current) return;
+
+    if (activeToolRef.current === 'time') {
+      const originY = canvasRef.current!.height + scrollY.current;
+      const ctxY = y - originY;
+      const measureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
+      const absolutePosition = -ctxY / measureHeight;
+      const snappedPosition = getSnappedAbsTime(absolutePosition);
+
+      isTimeDragging.current = true;
+      timeDragStart.current = snappedPosition;
+      timeDragCurrent.current = snappedPosition;
+      setTimeSelection(null);
+      requestRender();
+      return;
+    }
+
+    // Pixel-perfect node finder matching the exact screen box bounds of drawn notes.
+    // This solves grid-snapping discrepancy where snap position differs from actual note position.
+    const findNoteAtPixel = (mouseX: number, mouseY: number) => {
+      if (!bmsDataRef.current) return undefined;
+      const currentMeasureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
+      const currentMeasureOffsets = measureOffsetsRef.current;
+      const zoomedLayout = getActiveLayout().map(l => ({ ...l, width: l.width * zoomXRef.current }));
+      const canvasHeight = canvasRef.current!.height;
+      const worldX = mouseX + scrollX.current;
+      const worldY = mouseY - (canvasHeight + scrollY.current);
+      
+      const notes = bmsDataRef.current.notes;
+      const noteHeight = settingsRef.current.noteHeight ?? 12;
+
+      for (let i = notes.length - 1; i >= 0; i--) {
+        const note = notes[i];
+        
+        const targetLaneIndex = getTargetLaneIndex(zoomedLayout, note.channel, note.index);
+        if (targetLaneIndex === -1) continue;
+
+        let laneX = 50;
+        for (let j = 0; j < targetLaneIndex; j++) {
+          laneX += zoomedLayout[j].width;
+        }
+        const lWidth = zoomedLayout[targetLaneIndex].width;
+
+        if (worldX < laneX + 1 || worldX > laneX + lWidth - 1) continue;
+
+        if (note.measure >= currentMeasureOffsets.offsets.length) continue;
+        const measureStart = currentMeasureOffsets.offsets[note.measure];
+        const measureLen = bmsDataRef.current.measureLengths?.[note.measure] ?? 1;
+        const absolutePos = measureStart + note.position * measureLen;
+        const yVal = -absolutePos * currentMeasureHeight;
+        const noteY = yVal - noteHeight;
+
+        if (worldY >= noteY && worldY <= noteY + noteHeight) {
+          return note;
+        }
+      }
+
+      // 롱노트 몸통(Body) 검출
+      const currentLongNotePairs = longNotePairsRef.current || [];
+      for (let i = currentLongNotePairs.length - 1; i >= 0; i--) {
+        const pair = currentLongNotePairs[i];
+        const { start, end } = pair;
+
+        const targetLaneIndex = getTargetLaneIndex(zoomedLayout, start.channel, start.index);
+        if (targetLaneIndex === -1) continue;
+
+        let laneX = 50;
+        for (let j = 0; j < targetLaneIndex; j++) {
+          laneX += zoomedLayout[j].width;
+        }
+        const lWidth = zoomedLayout[targetLaneIndex].width;
+
+        // worldX가 레인 범위 내인지 검사
+        if (worldX < laneX + 1 || worldX > laneX + lWidth - 1) continue;
+
+        if (start.measure >= currentMeasureOffsets.offsets.length || end.measure >= currentMeasureOffsets.offsets.length) continue;
+
+        const startMeasureLen = bmsDataRef.current.measureLengths?.[start.measure] ?? 1;
+        const endMeasureLen = bmsDataRef.current.measureLengths?.[end.measure] ?? 1;
+
+        const startAbsolutePos = currentMeasureOffsets.offsets[start.measure] + start.position * startMeasureLen;
+        const endAbsolutePos = currentMeasureOffsets.offsets[end.measure] + end.position * endMeasureLen;
+
+        const startY = -startAbsolutePos * currentMeasureHeight;
+        const endY = -endAbsolutePos * currentMeasureHeight;
+
+        const yTop = Math.min(startY, endY);
+        const yBottom = Math.max(startY, endY);
+
+        // worldY가 롱노트 몸통 범위 내에 있는지 검사
+        if (worldY >= yTop - noteHeight && worldY <= yBottom) {
+          return start; // 시작 노트를 반환하여 세트로 선택되게 함
+        }
+      }
+
+      return undefined;
+    };
     
     const bmsPos = getBmsPosition(x, y);
     if (!bmsPos) return;
@@ -1073,13 +2552,24 @@ function App() {
       actualIndex = parseInt(lane.name.substring(1)) - 1;
     }
 
+    const normalizeChannel = (ch: number) => {
+      if (ch >= 0x51 && ch <= 0x59) return ch - 0x40; // LN -> Normal
+      if (ch >= 0x61 && ch <= 0x69) return ch - 0x40;
+      if (ch >= 0x31 && ch <= 0x39) return ch - 0x20; // Invisible -> Normal
+      if (ch >= 0x41 && ch <= 0x49) return ch - 0x20;
+      if (ch >= 0xD1 && ch <= 0xD9) return ch - 0xC0; // Mine -> Normal
+      if (ch >= 0xE1 && ch <= 0xE9) return ch - 0xC0;
+      return ch;
+    };
+
     const findNoteAt = () => {
       const POS_TOLERANCE = 0.05;
       const notes = bmsDataRef.current!.notes;
+      const targetNorm = normalizeChannel(actualChannel);
       for (let i = notes.length - 1; i >= 0; i--) {
         const n = notes[i];
         if (n.measure === measure && 
-            n.channel === actualChannel && 
+            normalizeChannel(n.channel) === targetNorm && 
             (n.channel !== 0x01 || n.index === actualIndex) &&
             Math.abs(n.position - position) < POS_TOLERANCE) {
           return n;
@@ -1092,26 +2582,62 @@ function App() {
       if (actualChannel !== undefined) {
         // Only write if there's no note there
         if (!findNoteAt()) {
-          addNote({
-            id: crypto.randomUUID(),
-            measure,
-            position,
-            channel: actualChannel,
-            index: actualIndex,
-            value: currentNoteValue
-          });
-          commitHistory();
+          const isPlayable = (actualChannel >= 0x11 && actualChannel <= 0x19) || 
+                             (actualChannel >= 0x21 && actualChannel <= 0x29);
+          if (isPlayable) {
+            const startPos = { 
+              measure, 
+              position, 
+              lane, 
+              channel: actualChannel, 
+              index: actualIndex 
+            };
+            isDrawingLongNote.current = true;
+            writeStartBmsPos.current = startPos;
+            writeCurrentBmsPos.current = startPos;
+            requestRender();
+          } else {
+            // 실수 타이밍 수치 동적 입력창 기믹 (BPM, STOP, SCROLL 영역 대응)
+            const isTimingChannel = actualChannel === 0x08 || actualChannel === 0x09 || actualChannel === 256;
+            if (isTimingChannel) {
+              timingModalClickInfo.current = { measure, position, actualChannel, actualIndex };
+              setTimingModalChannel(actualChannel);
+              setIsTimingValueModalOpen(true);
+              return;
+            }
+
+            addNote({
+              id: crypto.randomUUID(),
+              measure,
+              position,
+              channel: actualChannel,
+              index: actualIndex,
+              value: currentNoteValue
+            });
+            commitHistory();
+            playPreviewSound(currentNoteValue);
+          }
         }
       }
     } else if (activeToolRef.current === 'erase') {
-      const clickedNote = findNoteAt();
+      const clickedNote = findNoteAtPixel(x, y);
       if (clickedNote) {
         removeNote(clickedNote.id);
         commitHistory();
       }
     } else if (activeToolRef.current === 'select') {
-      const clickedNote = findNoteAt();
+      const clickedNote = findNoteAtPixel(x, y);
       if (clickedNote) {
+        const isAudioChannel = 
+          clickedNote.channel === 0x01 || 
+          (clickedNote.channel >= 0x11 && clickedNote.channel <= 0x19) || 
+          (clickedNote.channel >= 0x21 && clickedNote.channel <= 0x29) || 
+          (clickedNote.channel >= 0x51 && clickedNote.channel <= 0x59) || 
+          (clickedNote.channel >= 0x61 && clickedNote.channel <= 0x69);
+
+        if (isAudioChannel && !longNoteEndIdsRef.current.has(clickedNote.id)) {
+          playPreviewSound(clickedNote.value);
+        }
         if (!selectedNotesRef.current.includes(clickedNote.id)) {
           setSelectedNotes([clickedNote.id]);
           dragNoteInitialState.current = [{
@@ -1157,6 +2683,9 @@ function App() {
           }));
         }
         isDraggingNotes.current = true;
+        const measureStart = measureOffsetsRef.current.offsets[measure];
+        const measureLen = bmsDataRef.current.measureLengths?.[measure] ?? 1;
+        dragStartAbsPos.current = measureStart + position * measureLen;
         dragStartBmsPos.current = { measure, position, channel: actualChannel, index: actualIndex };
       } else {
         isSelectingBox.current = true;
@@ -1164,138 +2693,6 @@ function App() {
         selectionBoxCurrent.current = { x, y };
         if (!e.shiftKey) setSelectedNotes([]);
       }
-    }
-  };
-
-  const handleNew = () => {
-    if (isDirty) {
-      if (!window.confirm("You have unsaved changes. Are you sure you want to create a new file?")) return;
-    }
-    setBmsData(null);
-    setRawBmsContent(null);
-    setFileName("");
-    setFileHandle(null);
-    setIsFileMenuOpen(false);
-  };
-
-  const loadFileFromHandle = async (handle: any) => {
-    try {
-      const file = await handle.getFile();
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        try {
-          const text = event.target?.result as string;
-          setRawBmsContent(text);
-          const parsedData = parseBms(text, useBase62Ref.current);
-          
-          scrollY.current = 0;
-          scrollX.current = 0;
-          setBmsData(parsedData);
-          setFileName(file.name);
-          setFileHandle(handle);
-          setLastSaved();
-          
-          const recents = await addRecentFile(handle);
-          setRecentFiles(recents);
-        } catch (err) {
-          console.error("Failed to parse BMS", err);
-          alert("Failed to parse BMS file.");
-        }
-      };
-      reader.readAsText(file, 'Shift-JIS');
-    } catch (e) {
-      console.error(e);
-      alert("Failed to read file. It may have been moved or permissions denied.");
-    }
-  };
-
-  const handleOpen = async () => {
-    setIsFileMenuOpen(false);
-    if (isDirty) {
-      if (!window.confirm("You have unsaved changes. Are you sure you want to open a different file?")) return;
-    }
-    try {
-      const [handle] = await (window as any).showOpenFilePicker({
-        types: [{ description: 'BMS Files', accept: { 'text/plain': ['.bms', '.bme', '.bml', '.pms'] } }]
-      });
-      await loadFileFromHandle(handle);
-    } catch (e) {
-      console.log('Open cancelled or failed', e);
-    }
-  };
-
-  const handleSave = async () => {
-    setIsFileMenuOpen(false);
-    if (!isDirty || !bmsDataRef.current) return;
-
-    if (overlappingNoteIds.size > 0) {
-      if (!window.confirm('겹친 노트가 존재합니다. 그래도 저장하시겠습니까?')) return;
-    }
-
-    if (!fileHandle) {
-      handleSaveAs();
-      return;
-    }
-
-    try {
-      const hasPermission = await verifyPermission(fileHandle, true);
-      if (!hasPermission) {
-        alert("Cannot save file because write permission was denied by the user.");
-        return;
-      }
-      
-      const bmsString = encodeBms(bmsDataRef.current, useBase62Ref.current);
-      const writable = await fileHandle.createWritable();
-      await writable.write(bmsString);
-      await writable.close();
-      setLastSaved();
-    } catch (e) {
-      console.error('Save failed', e);
-      alert('Failed to save file. Check console for details.');
-    }
-  };
-
-  const handleSaveAs = async () => {
-    setIsFileMenuOpen(false);
-    if (!bmsDataRef.current) return;
-
-    if (overlappingNoteIds.size > 0) {
-      if (!window.confirm('겹친 노트가 존재합니다. 그래도 저장하시겠습니까?')) return;
-    }
-
-    try {
-      const handle = await (window as any).showSaveFilePicker({
-        suggestedName: fileName || 'untitled.bms',
-        types: [{ description: 'BMS Files', accept: { 'text/plain': ['.bms', '.bme', '.bml', '.pms'] } }]
-      });
-      
-      const bmsString = encodeBms(bmsDataRef.current, useBase62Ref.current);
-      const writable = await handle.createWritable();
-      await writable.write(bmsString);
-      await writable.close();
-      
-      setFileName(handle.name);
-      setFileHandle(handle);
-      setLastSaved();
-      
-      const recents = await addRecentFile(handle);
-      setRecentFiles(recents);
-    } catch (e) {
-      console.log('Save As cancelled or failed', e);
-    }
-  };
-
-  const handleRecentClick = async (id: string) => {
-    setIsFileMenuOpen(false);
-    if (isDirty) {
-      if (!window.confirm("You have unsaved changes. Are you sure you want to open a recent file?")) return;
-    }
-    const handle = await loadRecentFileHandle(id);
-    if (handle) {
-      await loadFileFromHandle(handle);
-    } else {
-      alert("Cannot open recent file. Permissions might have expired or file was deleted.");
-      setRecentFiles(getRecentFiles()); // Refresh list to maybe clear invalid
     }
   };
 
@@ -1313,42 +2710,162 @@ function App() {
     setFileHandle(null);
   };
 
-  const handleToggleMode = () => {
-    const newMode = !useBase62;
-    setUseBase62(newMode);
+  const handleApplyTimingValue = (parsedVal: number) => {
+    const info = timingModalClickInfo.current;
+    if (!info) return;
+    const { measure, position, actualChannel, actualIndex } = info;
+    const currentBmsData = bmsDataRef.current;
+    if (!currentBmsData) return;
     
-    if (rawBmsContent) {
-      const parsedData = parseBms(rawBmsContent, newMode);
-      setBmsData(parsedData);
+    if (!currentBmsData.bpms) currentBmsData.bpms = {};
+    if (!currentBmsData.stops) currentBmsData.stops = {};
+    if (!currentBmsData.scrolls) currentBmsData.scrolls = {};
+    
+    let valType = '';
+    if (actualChannel === 0x08) valType = 'bpm';
+    else if (actualChannel === 0x09) valType = 'stop';
+    else if (actualChannel === 256) valType = 'scroll';
+    
+    let targetMap: Record<number, number> = {};
+    if (valType === 'bpm') targetMap = currentBmsData.bpms;
+    else if (valType === 'stop') targetMap = currentBmsData.stops;
+    else if (valType === 'scroll') targetMap = currentBmsData.scrolls;
+    
+    let targetIdx = -1;
+    const entries = Object.entries(targetMap);
+    for (const [k, v] of entries) {
+      if (Math.abs(v - parsedVal) < 1e-7) {
+        targetIdx = parseInt(k);
+        break;
+      }
     }
+    
+    if (targetIdx === -1) {
+      let nextIdx = 1;
+      while (targetMap[nextIdx] !== undefined) {
+        nextIdx++;
+      }
+      targetMap[nextIdx] = parsedVal;
+      targetIdx = nextIdx;
+    }
+    
+    addNote({
+      id: crypto.randomUUID(),
+      measure,
+      position,
+      channel: actualChannel,
+      index: actualIndex,
+      value: targetIdx
+    });
+    commitHistory();
+    requestRender();
   };
+
+  // ==========================================
+  // 시간편집 (Time Edit, F1) 신규 훅 및 유틸 바인딩
+  // ==========================================
+  const {
+    handleApplyTimeSpace,
+    handleApplyTimeBpm,
+    handleApplyTimeStop
+  } = useTimeEditOperations(
+    {
+      bmsData,
+      timeSelection,
+      measureOffsets,
+      longNotePairs,
+      hasNotesInsideStopArea
+    },
+    {
+      commitHistory,
+      setTimeSelection,
+      requestRender
+    }
+  );
+
+  // 절대 마디 실수값(absTime)에 현재 격자 박자(gridSnap)를 적용하여 정교하게 스냅된 실수값을 구합니다.
+  const getSnappedAbsTime = (absTime: number): number => {
+    return getSnappedAbsTimeUtil(
+      absTime,
+      gridSnapRef.current,
+      measureOffsetsRef.current.offsets,
+      bmsDataRef.current?.measureLengths || {}
+    );
+  };
+
+  // ==========================================
+  // 키보드 단축키 및 클립보드 신규 훅 바인딩
+  // ==========================================
+  const {
+    handleUndo,
+    handleRedo,
+    handleCut,
+    handleCopy,
+    handlePaste,
+    handleDelete,
+    handleSelectAll
+  } = useKeyboardShortcuts(
+    {
+      scrollY,
+      hoverBmsPos,
+      canvasRef,
+      measureOffsetsRef,
+      zoomYRef,
+      maxScrollYRef,
+      bmsDataRef
+    },
+    {
+      setIsGoToMeasureOpen,
+      requestRender,
+      MIN_SCROLL_Y
+    }
+  );
 
   return (
     <div 
-      className="app-container" 
+      className={`app-container theme-${settings.theme || 'dark'}`} 
       ref={appContainerRef}
-      style={{ '--sidebar-width': `${leftWidthRef.current}px`, '--right-panel-width': `${rightWidthRef.current}px` } as React.CSSProperties}
+      style={{ 
+        '--sidebar-width': viewSettings.showLeftSidebar ? `${leftWidthRef.current}px` : '0px', 
+        '--right-panel-width': viewSettings.showRightSidebar ? `${rightWidthRef.current}px` : '0px' 
+      } as React.CSSProperties}
     >
       <Topbar 
   isFileMenuOpen={isFileMenuOpen} setIsFileMenuOpen={setIsFileMenuOpen} 
   handleNew={handleNew} handleOpen={handleOpen} handleSave={handleSave} 
   handleSaveAs={handleSaveAs} handleRecentClick={handleRecentClick} 
   handleExit={handleExit} isDirty={isDirty} hasBmsData={!!bmsData} 
-  recentFiles={recentFiles} useBase62={useBase62} handleToggleMode={handleToggleMode} 
+  recentFiles={recentFiles} useBase62={useBase62} 
+  handleUndo={handleUndo} handleRedo={handleRedo} handleCut={handleCut}
+  handleCopy={handleCopy} handlePaste={handlePaste} handleDelete={handleDelete}
+  handleSelectAll={handleSelectAll} handleGoToMeasure={() => setIsGoToMeasureOpen(true)}
+  handleOpenSettings={handleOpenSettings}
+  handleOpenHelp={handleOpenHelp}
 />
 
 <div className="main-area">
-  <LeftSidebar 
-    handleOpen={handleOpen} handleSave={handleSave} 
-    isDirty={isDirty} hasBmsData={!!bmsData} 
-    totalNotesCount={totalNotesCount} playableNotesCount={playableNotesCount} 
-    activeTool={activeTool} setActiveTool={setActiveTool} 
-  />
-
-  <div 
-    className="resizer resizer-left"
-    onMouseDown={() => { isResizingLeft.current = true; }}
-  />
+  {viewSettings.showLeftSidebar && (
+    <>
+      <LeftSidebar 
+        handleNew={handleNew}
+        handleOpen={handleOpen}
+        handleSave={handleSave} 
+        handleSaveAs={handleSaveAs}
+        handleOpenDiff={() => setIsBmsDiffOpen(true)}
+        isDirty={isDirty} hasBmsData={!!bmsData} 
+        totalNotesCount={totalNotesCount} playableNotesCount={playableNotesCount} 
+        activeTool={activeTool} setActiveTool={setActiveTool} 
+        timeSelection={timeSelection}
+        onOpenTimeSpaceModal={() => setIsTimeSpaceModalOpen(true)}
+        onOpenTimeBpmModal={() => setIsTimeBpmModalOpen(true)}
+        onOpenTimeStopModal={() => setIsTimeStopModalOpen(true)}
+      />
+      <div 
+        className="resizer resizer-left"
+        onMouseDown={() => { isResizingLeft.current = true; }}
+      />
+    </>
+  )}
 
   <main className="canvas-container" ref={containerRef}>
     <canvas 
@@ -1359,16 +2876,21 @@ function App() {
         if (!rect) return;
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
+        const pos = getBmsPosition(x, y);
+        hoverBmsPos.current = pos;
 
         if (activeToolRef.current === 'write') {
-          const pos = getBmsPosition(x, y);
-          hoverBmsPos.current = pos;
           if (canvasRef.current) {
             canvasRef.current.style.cursor = pos ? 'none' : 'crosshair';
           }
           requestRender();
+        } else if (activeToolRef.current === 'select') {
+          if (canvasRef.current) {
+            const isDragging = isDraggingNotes.current || isSelectingBox.current || isPanning.current;
+            canvasRef.current.style.cursor = isDragging ? 'crosshair' : 'default';
+          }
+          requestRender();
         } else {
-          hoverBmsPos.current = null;
           if (canvasRef.current) {
             canvasRef.current.style.cursor = 'crosshair';
           }
@@ -1378,27 +2900,188 @@ function App() {
       onMouseLeave={() => {
         hoverBmsPos.current = null;
         if (canvasRef.current) {
-          canvasRef.current.style.cursor = 'crosshair';
+          if (activeToolRef.current === 'select') {
+            canvasRef.current.style.cursor = 'default';
+          } else {
+            canvasRef.current.style.cursor = 'crosshair';
+          }
         }
         requestRender();
       }}
-      style={{ cursor: 'crosshair' }}
+      style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
     />
   </main>
 
-  <div 
-    className="resizer resizer-right"
-    onMouseDown={() => { isResizingRight.current = true; }}
-  />
-
-  <RightSidebar 
-    bmsData={bmsData} updateHeader={updateHeader} 
-    updateWav={updateWav} updateBmp={updateBmp} useBase62={useBase62}
-    gridSnap={gridSnap} setGridSnap={setGridSnap} 
-    zoomX={zoomX} setZoomX={setZoomX} 
-    zoomY={zoomY} setZoomY={setZoomY} 
-  />
+  {viewSettings.showRightSidebar && (
+    <>
+      <div 
+        className="resizer resizer-right"
+        onMouseDown={() => { isResizingRight.current = true; }}
+      />
+      <RightSidebar 
+        bmsData={bmsData} updateHeader={updateHeader} 
+        updateWav={updateWav} updateBmp={updateBmp} useBase62={useBase62}
+        gridSnap={gridSnap} setGridSnap={setGridSnap} 
+        zoomX={zoomX} setZoomX={setZoomX} 
+        zoomY={zoomY} setZoomY={setZoomY} 
+      />
+    </>
+  )}
 </div>
+
+{isTimingValueModalOpen && (
+  <TimingValueModal 
+    isOpen={true}
+    onClose={() => setIsTimingValueModalOpen(false)}
+    channel={timingModalChannel}
+    onApply={handleApplyTimingValue}
+  />
+)}
+
+{isTimeSpaceModalOpen && (
+  <TimeSpaceModal 
+    isOpen={true}
+    onClose={() => setIsTimeSpaceModalOpen(false)}
+    duration={timeSelection ? timeSelection.end - timeSelection.start : 0}
+    startAbs={timeSelection ? timeSelection.start : 0}
+    endAbs={timeSelection ? timeSelection.end : 0}
+    onApply={handleApplyTimeSpace}
+  />
+)}
+
+{isTimeBpmModalOpen && (
+  <TimeBpmModal 
+    isOpen={true}
+    onClose={() => setIsTimeBpmModalOpen(false)}
+    startAbs={timeSelection ? timeSelection.start : 0}
+    endAbs={timeSelection ? timeSelection.end : 0}
+    onApply={handleApplyTimeBpm}
+  />
+)}
+
+{isTimeStopModalOpen && (
+  <TimeStopModal 
+    isOpen={true}
+    onClose={() => setIsTimeStopModalOpen(false)}
+    duration={timeSelection ? timeSelection.end - timeSelection.start : 0}
+    startAbs={timeSelection ? timeSelection.start : 0}
+    endAbs={timeSelection ? timeSelection.end : 0}
+    hasNotesInside={hasNotesInsideStopArea}
+    onApply={handleApplyTimeStop}
+  />
+)}
+
+{isGoToMeasureOpen && (
+  <GoToMeasureModal 
+    isOpen={true} 
+    onClose={() => setIsGoToMeasureOpen(false)} 
+    onApply={(measure) => {
+      // Find Y position for this measure
+      const currentMeasureOffsets = measureOffsetsRef.current;
+      const measureOffset = currentMeasureOffsets.offsets[measure];
+      if (measureOffset !== undefined) {
+        const currentMeasureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
+        const measureY = measureOffset * currentMeasureHeight;
+        // Place the measure line 100px above the bottom of the screen
+        const targetScrollY = measureY - 100;
+        scrollY.current = Math.min(maxScrollYRef.current, Math.max(MIN_SCROLL_Y, targetScrollY));
+        requestRender();
+      }
+    }} 
+  />
+)}
+
+{isBmsSelectionOpen && (
+  <div className="modal-overlay">
+    <div className="modal-content" style={{ width: '400px', maxHeight: '400px', display: 'flex', flexDirection: 'column' }}>
+      <h3 style={{ margin: '0 0 12px 0' }}>Select BMS File</h3>
+      <p style={{ fontSize: '0.85rem', margin: '0 0 15px 0', color: 'var(--text-secondary)' }}>
+        Multiple BMS files detected in the folder. Please select a file to load:
+      </p>
+      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '15px' }}>
+        {bmsFilesToSelect.map((file, idx) => (
+          <button
+            key={idx}
+            className="tool-button"
+            style={{ width: '100%', padding: '10px', justifyContent: 'flex-start', textAlign: 'left', background: 'rgba(255,255,255,0.05)' }}
+            onClick={async () => {
+              setIsBmsSelectionOpen(false);
+              await loadBmsFromFile(file);
+            }}
+          >
+            {file.name}
+          </button>
+        ))}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <button className="tool-button" onClick={() => setIsBmsSelectionOpen(false)}>Cancel</button>
+      </div>
+    </div>
+  </div>
+)}
+
+{isSettingsOpen && (
+  <SettingsModal 
+    isOpen={true} 
+    onClose={() => setIsSettingsOpen(false)} 
+    initialTab={settingsTab}
+  />
+)}
+
+{isHelpOpen && (
+  <HelpModal 
+    isOpen={true} 
+    onClose={() => setIsHelpOpen(false)} 
+    defaultTab={helpTab}
+  />
+)}
+
+{isBmsDiffOpen && (
+  <BmsDiffModal
+    isOpen={true}
+    onClose={() => setIsBmsDiffOpen(false)}
+    baseBms={diffBaseBms}
+    setBaseBms={setDiffBaseBms}
+    baseFileName={diffBaseFileName}
+    setBaseFileName={setDiffBaseFileName}
+    diffResults={diffResults}
+    setDiffResults={setDiffResults}
+    isCompared={diffIsCompared}
+    setIsCompared={setDiffIsCompared}
+    diffCheckHistoryIndex={diffCheckHistoryIndex}
+    onGoToMeasure={(measure) => {
+      const currentMeasureOffsets = measureOffsetsRef.current;
+      const measureOffset = currentMeasureOffsets.offsets[measure];
+      if (measureOffset !== undefined) {
+        const currentMeasureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
+        const measureY = measureOffset * currentMeasureHeight;
+        const targetScrollY = measureY - 100;
+        scrollY.current = Math.min(maxScrollYRef.current, Math.max(MIN_SCROLL_Y, targetScrollY));
+        requestRender();
+      }
+    }}
+  />
+)}
+
+{isValidationErrorOpen && (
+  <BmsValidationErrorModal
+    isOpen={true}
+    onClose={() => setIsValidationErrorOpen(false)}
+    errors={validationErrors}
+    onGoToMeasure={(measure) => {
+      const currentMeasureOffsets = measureOffsetsRef.current;
+      const measureOffset = currentMeasureOffsets.offsets[measure];
+      if (measureOffset !== undefined) {
+        const currentMeasureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
+        const measureY = measureOffset * currentMeasureHeight;
+        const targetScrollY = measureY - 100;
+        scrollY.current = Math.min(maxScrollYRef.current, Math.max(MIN_SCROLL_Y, targetScrollY));
+        requestRender();
+      }
+    }}
+  />
+)}
+
 </div>
 );
 }
