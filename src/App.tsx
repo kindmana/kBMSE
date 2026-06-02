@@ -706,7 +706,8 @@ function App() {
     handleSave,
     handleSaveAs,
     handleRecentClick,
-    loadBmsFromFile
+    loadBmsFromFile,
+    loadBmsByAbsolutePath
   } = useFileOperations({
     isDirty,
     bmsDataRef,
@@ -729,6 +730,23 @@ function App() {
       setIsValidationErrorOpen(true);
     }
   });
+
+  useEffect(() => {
+    // 앱 시작 시 CLI 실행 인자(Argument)로 전달된 파일이 있는지 백엔드에 묻고 로딩을 수행합니다.
+    const checkStartupArgs = async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const fileToLoad: string | null = await invoke('get_args_file');
+        if (fileToLoad) {
+          console.log(`[FileAssociation] Found startup file argument: ${fileToLoad}`);
+          await loadBmsByAbsolutePath(fileToLoad);
+        }
+      } catch (err) {
+        console.error("Failed to resolve startup file args:", err);
+      }
+    };
+    checkStartupArgs();
+  }, []);
 
   const drawGridAndNotes = () => {
     // if (isPlayingRef.current !== lastIsPlayingLog.current) {
@@ -1025,9 +1043,11 @@ function App() {
       ctx.textAlign = 'center';
 
       for (let m = 0; m <= totalMeasures; m++) {
+        const measureLen = currentBmsData?.measureLengths?.[m] ?? 1;
         const y = -(currentMeasureOffsets.offsets[m] * currentMeasureHeight);
+        const yEnd = y - currentMeasureHeight * measureLen;
         
-        if (y < topY - currentMeasureHeight || y > bottomY + currentMeasureHeight) continue;
+        if (y < topY - currentMeasureHeight || yEnd > bottomY + currentMeasureHeight) continue;
 
         if (settings.showMeasureLine) {
           ctx.strokeStyle = theme === 'light' 
@@ -1039,7 +1059,6 @@ function App() {
           ctx.stroke();
         }
 
-        const measureLen = currentBmsData?.measureLengths?.[m] ?? 1;
         const snap = gridSnapRef.current;
         const auxSnap = auxGridSnapRef.current;
 
@@ -1423,14 +1442,12 @@ function App() {
 
       // Draw Selection Box
       if (isSelectingBox.current && selectionBoxStart.current && selectionBoxCurrent.current) {
-        // Temporarily reset transform to screen coords to draw the selection box
-        ctx.save();
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
         const sx = selectionBoxStart.current.x;
         const sy = selectionBoxStart.current.y;
         const cx = selectionBoxCurrent.current.x;
         const cy = selectionBoxCurrent.current.y;
         
+        ctx.save();
         ctx.fillStyle = 'rgba(100, 150, 255, 0.2)';
         ctx.fillRect(Math.min(sx, cx), Math.min(sy, cy), Math.abs(cx - sx), Math.abs(cy - sy));
         ctx.strokeStyle = 'rgba(100, 150, 255, 0.8)';
@@ -1673,6 +1690,17 @@ function App() {
         }
         scrollY.current = Math.min(maxScrollYRef.current, Math.max(MIN_SCROLL_Y, scrollY.current + delta));
       }
+
+      if (isSelectingBox.current && selectionBoxStart.current && canvasRef.current) {
+        const mx = lastMouseCoords.current.x;
+        const my = lastMouseCoords.current.y;
+        const currentOriginY = canvasRef.current.height + scrollY.current;
+        selectionBoxCurrent.current = {
+          x: mx + scrollX.current,
+          y: my - currentOriginY
+        };
+      }
+
       requestRender();
     };
 
@@ -1685,6 +1713,7 @@ function App() {
   const isSelectingBox = useRef(false);
   const selectionBoxStart = useRef<{ x: number, y: number } | null>(null);
   const selectionBoxCurrent = useRef<{ x: number, y: number } | null>(null);
+  const lastMouseCoords = useRef<{ x: number, y: number }>({ x: 0, y: 0 });
   
   const hoverBmsPos = useRef<{ measure: number, position: number, lane: any } | null>(null);
 
@@ -1890,6 +1919,7 @@ function App() {
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
+      lastMouseCoords.current = { x, y };
 
       if (isTimeDragging.current && timeDragStart.current !== null) {
         const originY = canvas.height + scrollY.current;
@@ -1916,7 +1946,11 @@ function App() {
       }
 
       if (isSelectingBox.current && selectionBoxStart.current) {
-        selectionBoxCurrent.current = { x, y };
+        const currentOriginY = canvas.height + scrollY.current;
+        selectionBoxCurrent.current = {
+          x: x + scrollX.current,
+          y: y - currentOriginY
+        };
         requestRender();
       } else if (isDraggingNotes.current && dragStartBmsPos.current && bmsDataRef.current) {
         // Compute delta
@@ -2122,8 +2156,8 @@ function App() {
         const startMeasureLen = bmsDataRef.current.measureLengths[start.measure] ?? 1;
         const endMeasureLen = bmsDataRef.current.measureLengths[end.measure] ?? 1;
 
-        const startAbsolutePos = measureOffsets.offsets[start.measure] + start.position * startMeasureLen;
-        const endAbsolutePos = measureOffsets.offsets[end.measure] + end.position * endMeasureLen;
+        const startAbsolutePos = measureOffsetsRef.current.offsets[start.measure] + start.position * startMeasureLen;
+        const endAbsolutePos = measureOffsetsRef.current.offsets[end.measure] + end.position * endMeasureLen;
 
         const actualChannel = start.channel;
         const actualIndex = start.index;
@@ -2201,7 +2235,7 @@ function App() {
             if (normalizeChannel(note.channel) === normalizeChannel(actualChannel) && 
                 (note.channel !== 0x01 || note.index === actualIndex)) {
               const noteMeasureLen = bmsDataRef.current!.measureLengths[note.measure] ?? 1;
-              const noteAbs = measureOffsets.offsets[note.measure] + note.position * noteMeasureLen;
+              const noteAbs = measureOffsetsRef.current.offsets[note.measure] + note.position * noteMeasureLen;
               if (noteAbs >= lowerAbs - 1e-6 && noteAbs <= upperAbs + 1e-6) {
                 // BGM 인덱스 분배
                 let bgmIndex = 0;
@@ -2269,8 +2303,8 @@ function App() {
         const selectedIds: string[] = [];
         const currentMeasureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
         const currentZoomX = zoomXRef.current;
-        const originY = canvasRef.current!.height + scrollY.current;
         const activeLayout = getActiveLayout();
+        const noteHeight = settingsRef.current.noteHeight ?? 12;
 
         bmsDataRef.current.notes.forEach(note => {
           let targetLaneIndex = getTargetLaneIndex(activeLayout, note.channel, note.index);
@@ -2281,13 +2315,10 @@ function App() {
           const lWidth = activeLayout[targetLaneIndex].width * currentZoomX;
 
           const measureLen = bmsDataRef.current?.measureLengths?.[note.measure] ?? 1;
-          const y = -(measureOffsets.offsets[note.measure] + note.position * measureLen) * currentMeasureHeight;
-          const noteY = y - 12;
+          const y = -(measureOffsetsRef.current.offsets[note.measure] + note.position * measureLen) * currentMeasureHeight;
+          const noteY = y - noteHeight;
           
-          const canvasNoteX = laneX - scrollX.current;
-          const canvasNoteY = noteY + originY;
-          
-          if (canvasNoteX + lWidth >= x1 && canvasNoteX <= x2 && canvasNoteY + 12 >= y1 && canvasNoteY <= y2) {
+          if (laneX + lWidth >= x1 && laneX <= x2 && noteY + noteHeight >= y1 && noteY <= y2) {
             selectedIds.push(note.id);
           }
         });
@@ -2426,6 +2457,7 @@ function App() {
     if (!rect) return;
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+    lastMouseCoords.current = { x, y };
 
     const vRect = vThumbRect.current;
     if (vRect.w > 0 && x >= vRect.x - 2 && x <= vRect.x + vRect.w + 2 && y >= vRect.y && y <= vRect.y + vRect.h) {
@@ -2689,8 +2721,11 @@ function App() {
         dragStartBmsPos.current = { measure, position, channel: actualChannel, index: actualIndex };
       } else {
         isSelectingBox.current = true;
-        selectionBoxStart.current = { x, y };
-        selectionBoxCurrent.current = { x, y };
+        const currentOriginY = canvasRef.current!.height + scrollY.current;
+        const wx = x + scrollX.current;
+        const wy = y - currentOriginY;
+        selectionBoxStart.current = { x: wx, y: wy };
+        selectionBoxCurrent.current = { x: wx, y: wy };
         if (!e.shiftKey) setSelectedNotes([]);
       }
     }

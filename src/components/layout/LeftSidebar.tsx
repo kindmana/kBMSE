@@ -166,6 +166,13 @@ export const LeftSidebar = ({
         <div className="panel-title">{t.tools}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
           <button 
+            className={`tool-button ${activeTool === 'time' ? 'active' : ''}`}
+            style={sidebarBtnStyle}
+            onClick={() => setActiveTool('time')}
+          >
+            <Clock size={14} /> <span style={{ whiteSpace: 'nowrap' }}>{t.timeTool}</span>
+          </button>
+          <button 
             className={`tool-button ${activeTool === 'select' ? 'active' : ''}`}
             style={sidebarBtnStyle}
             onClick={() => setActiveTool('select')}
@@ -178,13 +185,6 @@ export const LeftSidebar = ({
             onClick={() => setActiveTool('write')}
           >
             <Pencil size={14} /> <span style={{ whiteSpace: 'nowrap' }}>{t.writeTool}</span>
-          </button>
-          <button 
-            className={`tool-button ${activeTool === 'time' ? 'active' : ''}`}
-            style={sidebarBtnStyle}
-            onClick={() => setActiveTool('time')}
-          >
-            <Clock size={14} /> <span style={{ whiteSpace: 'nowrap' }}>{t.timeTool}</span>
           </button>
         </div>
       </div>

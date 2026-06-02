@@ -798,7 +798,7 @@ export const RightSidebar = ({
                 </div>
                 <input 
                   type="range" 
-                  min="0.5" max="4" step="0.1" 
+                  min="0.5" max="10" step="0.1" 
                   value={zoomY} 
                   onChange={(e) => setZoomY(parseFloat(e.target.value))}
                   style={{ width: '100%' }}

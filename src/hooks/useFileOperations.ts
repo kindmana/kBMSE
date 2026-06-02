@@ -625,6 +625,87 @@ export const useFileOperations = ({
     }
   };
 
+  const loadBmsByAbsolutePath = async (filePath: string) => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result = await invoke<any>('load_bms_by_path', { filePath });
+      if (result) {
+        console.log(`[TauriArgLoad] Loading BMS file by path: ${result.file_name}`);
+        const activeEncoding = useEditorStore.getState().settings.encoding || 'shift-jis';
+        const decoder = new TextDecoder(activeEncoding);
+        const text = decoder.decode(new Uint8Array(result.content_bytes));
+        setRawBmsContent(text);
+        const parsedUseBase62 = resolveBase62Mode(text);
+        const parsedData = parseBms(text, parsedUseBase62);
+        
+        scrollY.current = 0;
+        scrollX.current = 0;
+        setBmsData(parsedData, result.file_name);
+        setFileName(result.file_name);
+        setFileHandle(filePath);
+        setLastSaved();
+        
+        if (result.dir_path) {
+          localStorage.setItem('kBMSE_last_opened_dir', result.dir_path);
+        }
+        
+        // Automatically load audio files in parallel from same directory!
+        if (result.audio_files && result.audio_files.length > 0) {
+          const activeWavIndices = new Set<number>();
+          if (parsedData.header.wav00) activeWavIndices.add(0);
+          
+          const nonAudioChannels = [0x02, 0x03, 0x08, 0x09, 256];
+          for (const note of parsedData.notes) {
+            if (!nonAudioChannels.includes(note.channel)) {
+              activeWavIndices.add(note.value);
+            }
+          }
+          
+          const activeWavNames = new Set<string>();
+          const activeBaseNames = new Set<string>();
+          
+          for (const idx of activeWavIndices) {
+            const filename = parsedData.wavs[idx];
+            if (filename) {
+              const normalized = filename.toLowerCase().normalize('NFC');
+              activeWavNames.add(normalized);
+              
+              const baseName = normalized.substring(Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\')) + 1);
+              activeBaseNames.add(baseName);
+            }
+          }
+          
+          let filteredAudioFiles = result.audio_files.filter((file: any) => {
+            const nameLower = file.name.toLowerCase().normalize('NFC');
+            if (activeWavNames.has(nameLower) || activeBaseNames.has(nameLower)) return true;
+            for (const wavName of activeWavNames) {
+              if (wavName.endsWith(nameLower) || nameLower.endsWith(wavName)) return true;
+            }
+            return false;
+          });
+          
+          if (filteredAudioFiles.length === 0) {
+            console.warn(`[TauriArgLoad] Active audio filter returned 0 files. Falling back to loading ALL ${result.audio_files.length} audio files.`);
+            filteredAudioFiles = result.audio_files;
+          } else {
+            console.log(`[TauriArgLoad] Filtered active audio files: ${filteredAudioFiles.length} of ${result.audio_files.length} total files.`);
+          }
+          
+          await loadAudioFromTauriPaths(filteredAudioFiles);
+        } else {
+          useEditorStore.getState().setAudioBuffers({});
+        }
+
+        // Move this file to the top of recent files list
+        const updatedRecents = await addRecentFile(filePath);
+        setRecentFiles(updatedRecents);
+      }
+    } catch (err) {
+      console.error("Tauri load file by absolute path failed:", err);
+      alert("Cannot open file. The file may have been moved or deleted.");
+    }
+  };
+
   const handleRecentClick = async (id: string) => {
     setIsFileMenuOpen(false);
     if (isDirty) {
@@ -634,93 +715,10 @@ export const useFileOperations = ({
     const recents = getRecentFiles();
     const recentItem = recents.find(r => r.id === id);
     if (!recentItem) return;
-
+ 
     if (recentItem.path) {
       // Tauri environment: load by absolute path
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        const result = await invoke<any>('load_bms_by_path', { filePath: recentItem.path });
-        if (result) {
-          console.log(`[TauriRecent] Loading BMS file: ${result.file_name}`);
-          const activeEncoding = useEditorStore.getState().settings.encoding || 'shift-jis';
-          const decoder = new TextDecoder(activeEncoding);
-          const text = decoder.decode(new Uint8Array(result.content_bytes));
-          setRawBmsContent(text);
-          const parsedUseBase62 = resolveBase62Mode(text);
-          const parsedData = parseBms(text, parsedUseBase62);
-          
-          scrollY.current = 0;
-          scrollX.current = 0;
-          setBmsData(parsedData, result.file_name);
-          setFileName(result.file_name);
-          setFileHandle(recentItem.path);
-          setLastSaved();
-          
-          if (result.dir_path) {
-            localStorage.setItem('kBMSE_last_opened_dir', result.dir_path);
-          }
-          
-          // Automatically load audio files in parallel from same directory!
-          if (result.audio_files && result.audio_files.length > 0) {
-            // [최적화]: 실제 노트 데이터 및 헤더에서 등장하는 키음들만 매칭하여 Eager Loading 수행
-            const activeWavIndices = new Set<number>();
-            if (parsedData.header.wav00) activeWavIndices.add(0);
-            
-            const nonAudioChannels = [0x02, 0x03, 0x08, 0x09, 256];
-            for (const note of parsedData.notes) {
-              if (!nonAudioChannels.includes(note.channel)) {
-                activeWavIndices.add(note.value);
-              }
-            }
-            
-            const activeWavNames = new Set<string>();
-            const activeBaseNames = new Set<string>();
-            
-            for (const idx of activeWavIndices) {
-              const filename = parsedData.wavs[idx];
-              if (filename) {
-                const normalized = filename.toLowerCase().normalize('NFC');
-                activeWavNames.add(normalized);
-                
-                const baseName = normalized.substring(Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\')) + 1);
-                activeBaseNames.add(baseName);
-              }
-            }
-            
-            let filteredAudioFiles = result.audio_files.filter((file: any) => {
-              const nameLower = file.name.toLowerCase().normalize('NFC');
-              if (activeWavNames.has(nameLower) || activeBaseNames.has(nameLower)) return true;
-              for (const wavName of activeWavNames) {
-                if (wavName.endsWith(nameLower) || nameLower.endsWith(wavName)) return true;
-              }
-              return false;
-            });
-            
-            // [안전장치]: 필터 결과 0개 검출 시 매칭 누락으로 판단하고 전체 폴더 파일 로드로 폴백
-            if (filteredAudioFiles.length === 0) {
-              console.warn(`[TauriRecent] Active audio filter returned 0 files. Falling back to loading ALL ${result.audio_files.length} audio files.`);
-              filteredAudioFiles = result.audio_files;
-            } else {
-              console.log(`[TauriRecent] Filtered active audio files: ${filteredAudioFiles.length} of ${result.audio_files.length} total files.`);
-            }
-            
-            await loadAudioFromTauriPaths(filteredAudioFiles);
-          } else {
-            useEditorStore.getState().setAudioBuffers({});
-          }
-
-          // Move this file to the top of recent files list
-          const updatedRecents = await addRecentFile(recentItem.path);
-          setRecentFiles(updatedRecents);
-        }
-      } catch (err) {
-        console.error("Tauri load recent failed:", err);
-        alert("Cannot open recent file. The file may have been moved or deleted.");
-        // Clear invalid item from recent files list
-        const filtered = recents.filter(r => r.id !== id);
-        localStorage.setItem('kBMSE_recent_files', JSON.stringify(filtered));
-        setRecentFiles(filtered);
-      }
+      await loadBmsByAbsolutePath(recentItem.path);
     } else {
       // Web environment: load by file handle
       const handle = await loadRecentFileHandle(id);
@@ -819,6 +817,7 @@ export const useFileOperations = ({
     handleRecentClick,
     loadBmsFromFile,
     loadBmsAndAudioFromFiles,
-    loadAudioFromTauriPaths
+    loadAudioFromTauriPaths,
+    loadBmsByAbsolutePath
   };
 };

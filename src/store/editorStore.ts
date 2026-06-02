@@ -535,9 +535,22 @@ export const useEditorStore = create<EditorState>((set) => ({
       stops: currentStops,
       bpms: currentBpms
     });
-    if (newHistory.length > 50) newHistory.shift();
     
-    return { history: newHistory, historyIndex: newHistory.length - 1 };
+    let nextLastSaved = state.lastSavedHistoryIndex;
+    if (newHistory.length > 50) {
+      newHistory.shift();
+      if (nextLastSaved > 0) {
+        nextLastSaved -= 1;
+      } else {
+        nextLastSaved = -1;
+      }
+    }
+    
+    return { 
+      history: newHistory, 
+      historyIndex: newHistory.length - 1,
+      lastSavedHistoryIndex: nextLastSaved
+    };
   }),
 
   undo: () => set((state) => {

@@ -165,11 +165,37 @@ fn write_local_file(path: String, content: String, encoding: Option<String>) -> 
     fs::write(path, bytes).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_args_file() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        for arg in args.iter().skip(1) {
+            let path = std::path::Path::new(arg);
+            if path.exists() && path.is_file() {
+                if let Some(ext) = path.extension() {
+                    let ext_str = ext.to_string_lossy().to_lowercase();
+                    if ext_str == "bms" || ext_str == "bme" || ext_str == "bml" || ext_str == "pms" {
+                        return Some(arg.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![open_bms_dialog, read_local_file, load_bms_by_path, save_bms_dialog, write_local_file])
+        .invoke_handler(tauri::generate_handler![
+            open_bms_dialog,
+            read_local_file,
+            load_bms_by_path,
+            save_bms_dialog,
+            write_local_file,
+            get_args_file
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
