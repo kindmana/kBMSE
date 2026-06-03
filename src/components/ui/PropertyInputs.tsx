@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 
-export const TextInput = ({ label, value, onChange }: any) => (
+export const TextInput = ({ label, value, onChange, onBlur }: any) => (
   <div className="property-item">
     <span className="property-label">{label}</span>
     <input 
@@ -9,11 +9,12 @@ export const TextInput = ({ label, value, onChange }: any) => (
       style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '4px 8px', fontSize: '0.9rem', outline: 'none' }}
       value={value || ''} 
       onChange={(e) => onChange(e.target.value)} 
+      onBlur={onBlur}
     />
   </div>
 );
 
-export const TextAreaInput = ({ label, value, onChange, rows = 2 }: any) => (
+export const TextAreaInput = ({ label, value, onChange, onBlur, rows = 2 }: any) => (
   <div className="property-item" style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'stretch' }}>
     <span className="property-label" style={{ marginBottom: '2px' }}>{label}</span>
     <textarea 
@@ -33,12 +34,13 @@ export const TextAreaInput = ({ label, value, onChange, rows = 2 }: any) => (
       }}
       value={value || ''} 
       onChange={(e) => onChange(e.target.value)} 
+      onBlur={onBlur}
     />
   </div>
 );
 
 
-export const NumberInput = ({ label, value, onChange, isFloat = false, min, max }: any) => (
+export const NumberInput = ({ label, value, onChange, onBlur, isFloat = false, min, max }: any) => (
   <div className="property-item">
     <span className="property-label">{label}</span>
     <input 
@@ -53,6 +55,7 @@ export const NumberInput = ({ label, value, onChange, isFloat = false, min, max 
         const val = isFloat ? parseFloat(e.target.value) : parseInt(e.target.value);
         onChange(isNaN(val) ? undefined : val);
       }} 
+      onBlur={onBlur}
     />
   </div>
 );
@@ -77,7 +80,7 @@ export const SelectInput = ({ label, value, onChange, options }: any) => (
   </div>
 );
 
-export const FileInput = ({ label, value, onChange }: any) => {
+export const FileInput = ({ label, value, onChange, onBlur }: any) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   return (
@@ -90,6 +93,7 @@ export const FileInput = ({ label, value, onChange }: any) => {
           style={{ flex: 1, width: '100%', background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '4px 8px', fontSize: '0.9rem', outline: 'none' }}
           value={value || ''} 
           onChange={(e) => onChange(e.target.value)} 
+          onBlur={onBlur}
           placeholder="Filename"
         />
         <input 
@@ -99,6 +103,7 @@ export const FileInput = ({ label, value, onChange }: any) => {
           onChange={(e) => {
             if (e.target.files && e.target.files.length > 0) {
               onChange(e.target.files[0].name);
+              if (onBlur) onBlur();
             }
           }}
         />
@@ -113,7 +118,7 @@ export const FileInput = ({ label, value, onChange }: any) => {
   );
 };
 
-export const LnObjInput = ({ label, value, onChange }: any) => {
+export const LnObjInput = ({ label, value, onChange, onBlur }: any) => {
   return (
     <div className="property-item">
       <span className="property-label" title="Base36 only (01-ZZ)">{label}</span>
@@ -127,13 +132,14 @@ export const LnObjInput = ({ label, value, onChange }: any) => {
           val = val.replace(/[^0-9A-Z]/g, '').substring(0, 2);
           onChange(val);
         }} 
+        onBlur={onBlur}
         placeholder="00"
       />
     </div>
   );
 };
 
-export const HexInput = ({ label, value, onChange }: any) => {
+export const HexInput = ({ label, value, onChange, onBlur }: any) => {
   return (
     <div className="property-item">
       <span className="property-label">{label}</span>
@@ -146,6 +152,7 @@ export const HexInput = ({ label, value, onChange }: any) => {
           const val = parseInt(e.target.value, 16);
           onChange(isNaN(val) ? undefined : val);
         }} 
+        onBlur={onBlur}
       />
     </div>
   );

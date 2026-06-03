@@ -11,7 +11,7 @@ let currentTauriLoadingSessionId = 0;
 interface FileOperationsOptions {
   isDirty: boolean;
   bmsDataRef: React.MutableRefObject<BmsData | null>;
-  useBase62Ref: React.MutableRefObject<boolean>;
+  useBase62Ref: React.MutableRefObject<16 | 36 | 62>;
   scrollY: React.MutableRefObject<number>;
   scrollX: React.MutableRefObject<number>;
   fileName: string | null;
@@ -49,23 +49,25 @@ export const useFileOperations = ({
   onValidationError
 }: FileOperationsOptions) => {
 
-  const resolveBase62Mode = (text: string) => {
+  const resolveBase62Mode = (text: string): 16 | 36 | 62 => {
     const { settings, setUseBase62 } = useEditorStore.getState();
     const mode = settings.base62Mode || 'auto';
-    let isB62 = true;
+    let baseVal: 16 | 36 | 62 = 62;
     
-    if (mode === '36') {
-      isB62 = false;
+    if (mode === '16') {
+      baseVal = 16;
+    } else if (mode === '36') {
+      baseVal = 36;
     } else if (mode === '62') {
-      isB62 = true;
+      baseVal = 62;
     } else {
       // 'auto' mode
-      isB62 = detectBase62Needed(text);
+      baseVal = detectBase62Needed(text) ? 62 : 36;
     }
     
-    setUseBase62(isB62);
-    useBase62Ref.current = isB62;
-    return isB62;
+    setUseBase62(baseVal);
+    useBase62Ref.current = baseVal;
+    return baseVal;
   };
 
   const handleNew = () => {

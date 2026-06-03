@@ -54,7 +54,8 @@ const BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv
 export function decodeBmsValueWithBase(valStr: string, base: number): number {
   if (valStr === "00") return 0;
   
-  const chars = base === 62 ? BASE62_CHARS : BASE36_CHARS;
+  const fullChars = base === 62 ? BASE62_CHARS : BASE36_CHARS;
+  const chars = fullChars.substring(0, base);
   
   let result = 0;
   for (let i = 0; i < valStr.length; i++) {
@@ -68,14 +69,16 @@ export function decodeBmsValueWithBase(valStr: string, base: number): number {
   return result;
 }
 
-export function decodeBmsValue(valStr: string, useBase62: boolean): number {
-  return decodeBmsValueWithBase(valStr, useBase62 ? 62 : 36);
+export function decodeBmsValue(valStr: string, baseMode: 16 | 36 | 62 | boolean): number {
+  const base = typeof baseMode === 'boolean' ? (baseMode ? 62 : 36) : baseMode;
+  return decodeBmsValueWithBase(valStr, base);
 }
 
 export function encodeBmsValueWithBase(value: number, base: number): string {
   if (value === 0) return "00";
   
-  const chars = base === 62 ? BASE62_CHARS : BASE36_CHARS;
+  const fullChars = base === 62 ? BASE62_CHARS : BASE36_CHARS;
+  const chars = fullChars.substring(0, base);
   
   let result = "";
   let temp = value;
@@ -89,11 +92,13 @@ export function encodeBmsValueWithBase(value: number, base: number): string {
   return result.padStart(2, "0");
 }
 
-export function encodeBmsValue(value: number, useBase62: boolean): string {
-  return encodeBmsValueWithBase(value, useBase62 ? 62 : 36);
+export function encodeBmsValue(value: number, baseMode: 16 | 36 | 62 | boolean): string {
+  const base = typeof baseMode === 'boolean' ? (baseMode ? 62 : 36) : baseMode;
+  return encodeBmsValueWithBase(value, base);
 }
 
-export function parseBms(bmsContent: string, useBase62: boolean): BmsData {
+export function parseBms(bmsContent: string, baseMode: 16 | 36 | 62 | boolean): BmsData {
+  const base = typeof baseMode === 'boolean' ? (baseMode ? 62 : 36) : baseMode;
   const lines = bmsContent.split(/\r?\n/);
   
   const bmsData: BmsData = {
@@ -155,7 +160,7 @@ export function parseBms(bmsContent: string, useBase62: boolean): BmsData {
       if (timingUseBase36) break;
     }
   }
-  const timingBase = timingUseBase36 ? (useBase62 ? 62 : 36) : 16;
+  const timingBase = base === 16 ? 16 : (timingUseBase36 ? base : 16);
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -224,7 +229,7 @@ export function parseBms(bmsContent: string, useBase62: boolean): BmsData {
       const idStr = defMatch[2];
       const val = defMatch[3];
       const isTimingType = type === "BPM" || type === "STOP" || type === "SCROLL";
-      const id = isTimingType ? decodeBmsValueWithBase(idStr, timingBase) : decodeBmsValue(idStr, useBase62);
+      const id = isTimingType ? decodeBmsValueWithBase(idStr, timingBase) : decodeBmsValue(idStr, base);
       
       if (type === "WAV") bmsData.wavs[id] = val;
       else if (type === "BMP") bmsData.bmps[id] = val;
@@ -264,11 +269,10 @@ export function parseBms(bmsContent: string, useBase62: boolean): BmsData {
       const isTimingChan = channel === 0x08 || channel === 0x09 || channel === 256;
       for (let i = 0; i < objCount; i++) {
         const objStr = dataStr.substr(i * 2, 2);
-        const objVal = channel === 0x03 
-          ? parseInt(objStr, 16) 
-          : (isTimingChan 
-             ? decodeBmsValueWithBase(objStr, timingBase) 
-             : decodeBmsValue(objStr, useBase62));
+        const objVal = channel === 0x03              ? parseInt(objStr, 16) 
+              : (isTimingChan 
+                 ? decodeBmsValueWithBase(objStr, timingBase) 
+                 : decodeBmsValue(objStr, base));
         
         if (objVal > 0) {
           bmsData.notes.push({
@@ -321,7 +325,8 @@ export function parseBms(bmsContent: string, useBase62: boolean): BmsData {
   return bmsData;
 }
 
-export function encodeBms(bmsData: BmsData, useBase62: boolean): string {
+export function encodeBms(bmsData: BmsData, baseMode: 16 | 36 | 62 | boolean): string {
+  const base = typeof baseMode === 'boolean' ? (baseMode ? 62 : 36) : baseMode;
   const lines: string[] = [];
   lines.push("*---------------------- HEADER FIELD");
   
@@ -400,7 +405,7 @@ export function encodeBms(bmsData: BmsData, useBase62: boolean): string {
   // Determine whether to use base 36/62 or base 16 (hex) for timing channels
   // Default is base 16. If index exceeds 255 (FF), we switch to base 36 (or base 62 if useBase62 is true).
   const maxTimingIndex = Math.max(activeBpmValues.length, activeStopValues.length, activeScrollValues.length);
-  const timingBase = maxTimingIndex > 255 ? (useBase62 ? 62 : 36) : 16;
+  const timingBase = base === 16 ? 16 : (maxTimingIndex > 255 ? base : 16);
 
   // Create clean, contiguous 1-based sequential index mappings
   const exportedBpms: Record<number, number> = {};
@@ -481,7 +486,7 @@ export function encodeBms(bmsData: BmsData, useBase62: boolean): string {
     if (!dict) return;
     const keys = Object.keys(dict).map(k => parseInt(k.toString())).sort((a, b) => a - b);
     for (const k of keys) {
-      lines.push(`#${prefix}${encodeBmsValue(k, useBase62)} ${dict[k]}`);
+      lines.push(`#${prefix}${encodeBmsValue(k, base)} ${dict[k]}`);
     }
   };
 
@@ -490,8 +495,8 @@ export function encodeBms(bmsData: BmsData, useBase62: boolean): string {
     const keys = Object.keys(dict).map(k => parseInt(k.toString())).sort((a, b) => a - b);
     for (const k of keys) {
       const isTiming = prefix === "BPM" || prefix === "STOP" || prefix === "SCROLL";
-      const base = isTiming ? timingBase : (useBase62 ? 62 : 36);
-      lines.push(`#${prefix}${encodeBmsValueWithBase(k, base)} ${dict[k]}`);
+      const baseVal = isTiming ? timingBase : base;
+      lines.push(`#${prefix}${encodeBmsValueWithBase(k, baseVal)} ${dict[k]}`);
     }
   };
 
@@ -612,7 +617,7 @@ export function encodeBms(bmsData: BmsData, useBase62: boolean): string {
             ? n.value.toString(16).toUpperCase().padStart(2, '0') 
             : (isTimingChan 
                ? encodeBmsValueWithBase(n.value, timingBase) 
-               : encodeBmsValue(n.value, useBase62));
+               : encodeBmsValue(n.value, base));
         }
       }
       

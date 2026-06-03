@@ -19,6 +19,7 @@ interface LeftSidebarProps {
   onOpenTimeSpaceModal: () => void;
   onOpenTimeBpmModal: () => void;
   onOpenTimeStopModal: () => void;
+  onOpenTimeAutoPlaceModal: () => void;
 }
 
 export const LeftSidebar = ({
@@ -36,7 +37,8 @@ export const LeftSidebar = ({
   timeSelection,
   onOpenTimeSpaceModal,
   onOpenTimeBpmModal,
-  onOpenTimeStopModal
+  onOpenTimeStopModal,
+  onOpenTimeAutoPlaceModal
 }: LeftSidebarProps) => {
   const { 
     startPlay, 
@@ -295,6 +297,21 @@ export const LeftSidebar = ({
               <Clock size={13} />
               <span style={{ whiteSpace: 'nowrap' }}>
                 {lang === 'ko' ? 'STOP 구간 추가' : lang === 'ja' ? 'STOP区間の追加' : 'Add STOP Area'}
+              </span>
+            </button>
+            <button
+              className={`tool-button ${!timeSelection ? 'disabled' : ''}`}
+              style={{
+                ...sidebarBtnStyle,
+                opacity: !timeSelection ? 0.5 : 1,
+                cursor: !timeSelection ? 'not-allowed' : 'pointer'
+              }}
+              disabled={!timeSelection}
+              onClick={onOpenTimeAutoPlaceModal}
+            >
+              <Clock size={13} />
+              <span style={{ whiteSpace: 'nowrap' }}>
+                {lang === 'ko' ? '노트 자동 배치' : lang === 'ja' ? 'ノーツ自動配置' : 'Auto Place Notes'}
               </span>
             </button>
           </div>

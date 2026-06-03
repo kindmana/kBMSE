@@ -11,7 +11,7 @@ interface RightSidebarProps {
   updateHeader: (header: Partial<BmsData['header']>) => void;
   updateWav: (index: number, filename: string) => void;
   updateBmp: (index: number, filename: string) => void;
-  useBase62: boolean;
+  useBase62: 16 | 36 | 62;
   gridSnap: number;
   setGridSnap: (snap: number) => void;
   zoomX: number;
@@ -48,7 +48,8 @@ export const RightSidebar = ({
     auxGridSnap, 
     setAuxGridSnap,
     settings,
-    updateExpansion
+    updateExpansion,
+    commitHistory
   } = useEditorStore();
 
   const lang = settings.language || 'en';
@@ -325,6 +326,7 @@ export const RightSidebar = ({
   const handleWavFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0 && editingWavIndex !== null) {
       updateWav(editingWavIndex, e.target.files[0].name);
+      commitHistory();
     }
     if (wavInputRef.current) wavInputRef.current.value = '';
     setEditingWavIndex(null);
@@ -342,6 +344,7 @@ export const RightSidebar = ({
   const handleBmpFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0 && editingBmpIndex !== null) {
       updateBmp(editingBmpIndex, e.target.files[0].name);
+      commitHistory();
     }
     if (bmpInputRef.current) bmpInputRef.current.value = '';
     setEditingBmpIndex(null);
@@ -349,7 +352,7 @@ export const RightSidebar = ({
 
   const renderWavBmpList = () => {
     if (!bmsData) return null;
-    const itemsCount = useBase62 ? 3843 : 1295;
+    const itemsCount = useBase62 === 62 ? 3843 : (useBase62 === 36 ? 1295 : 255);
     const items = [];
     
     const isWav = activeTab === 'wav';
@@ -502,21 +505,21 @@ export const RightSidebar = ({
           <div style={{ marginTop: '10px' }}>
             {bmsData ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <TextInput label={hLabels.title} value={bmsData.header.title} onChange={(val: string) => updateHeader({ title: val })} />
-                <TextInput label={hLabels.subtitle} value={bmsData.header.subtitle} onChange={(val: string) => updateHeader({ subtitle: val })} />
-                <TextInput label={hLabels.artist} value={bmsData.header.artist} onChange={(val: string) => updateHeader({ artist: val })} />
-                <TextInput label={hLabels.subartist} value={bmsData.header.subartist} onChange={(val: string) => updateHeader({ subartist: val })} />
-                <TextInput label={hLabels.genre} value={bmsData.header.genre} onChange={(val: string) => updateHeader({ genre: val })} />
+                <TextInput label={hLabels.title} value={bmsData.header.title} onChange={(val: string) => updateHeader({ title: val })} onBlur={() => commitHistory()} />
+                <TextInput label={hLabels.subtitle} value={bmsData.header.subtitle} onChange={(val: string) => updateHeader({ subtitle: val })} onBlur={() => commitHistory()} />
+                <TextInput label={hLabels.artist} value={bmsData.header.artist} onChange={(val: string) => updateHeader({ artist: val })} onBlur={() => commitHistory()} />
+                <TextInput label={hLabels.subartist} value={bmsData.header.subartist} onChange={(val: string) => updateHeader({ subartist: val })} onBlur={() => commitHistory()} />
+                <TextInput label={hLabels.genre} value={bmsData.header.genre} onChange={(val: string) => updateHeader({ genre: val })} onBlur={() => commitHistory()} />
                 
-                <NumberInput label={hLabels.bpm} value={bmsData.header.bpm} isFloat={true} onChange={(val: number) => updateHeader({ bpm: val })} />
+                <NumberInput label={hLabels.bpm} value={bmsData.header.bpm} isFloat={true} onChange={(val: number) => updateHeader({ bpm: val })} onBlur={() => commitHistory()} />
                 
-                <SelectInput label={hLabels.player} value={bmsData.header.player} onChange={(val: number) => updateHeader({ player: val })} options={[
+                <SelectInput label={hLabels.player} value={bmsData.header.player} onChange={(val: number) => { updateHeader({ player: val }); commitHistory(); }} options={[
                   { value: 1, label: lang === 'ko' ? '1 - 싱글 플레이' : (lang === 'ja' ? '1 - シングルプレイ' : '1 - Single Play') },
                   { value: 2, label: lang === 'ko' ? '2 - 커플 플레이' : (lang === 'ja' ? '2 - カップルプレイ' : '2 - Couple Play') },
                   { value: 3, label: lang === 'ko' ? '3 - 더블 플레이' : (lang === 'ja' ? '3 - ダブルプレイ' : '3 - Double Play') }
                 ]} />
                 
-                <SelectInput label={hLabels.rank} value={bmsData.header.rank} onChange={(val: number) => updateHeader({ rank: val })} options={[
+                <SelectInput label={hLabels.rank} value={bmsData.header.rank} onChange={(val: number) => { updateHeader({ rank: val }); commitHistory(); }} options={[
                   { value: 0, label: lang === 'ko' ? '0 - 매우 어려움 (Very Hard)' : (lang === 'ja' ? '0 - 非常に厳しい (Very Hard)' : '0 - Very Hard') },
                   { value: 1, label: lang === 'ko' ? '1 - 어려움 (Hard)' : (lang === 'ja' ? '1 - 厳しい (Hard)' : '1 - Hard') },
                   { value: 2, label: lang === 'ko' ? '2 - 보통 (Normal)' : (lang === 'ja' ? '2 - 普通 (Normal)' : '2 - Normal') },
@@ -524,9 +527,9 @@ export const RightSidebar = ({
                   { value: 4, label: lang === 'ko' ? '4 - 매우 쉬움 (Very Easy)' : (lang === 'ja' ? '4 - 非常に易しい (Very Easy)' : '4 - Very Easy') }
                 ]} />
                 
-                <TextInput label={hLabels.playlevel} value={bmsData.header.playLevel} onChange={(val: string) => updateHeader({ playLevel: val })} />
+                <TextInput label={hLabels.playlevel} value={bmsData.header.playLevel} onChange={(val: string) => updateHeader({ playLevel: val })} onBlur={() => commitHistory()} />
                 
-                <SelectInput label={hLabels.difficulty} value={bmsData.header.difficulty} onChange={(val: number) => updateHeader({ difficulty: val })} options={[
+                <SelectInput label={hLabels.difficulty} value={bmsData.header.difficulty} onChange={(val: number) => { updateHeader({ difficulty: val }); commitHistory(); }} options={[
                   { value: 0, label: '0 - None' },
                   { value: 1, label: '1 - Beginner' },
                   { value: 2, label: '2 - Normal' },
@@ -535,29 +538,29 @@ export const RightSidebar = ({
                   { value: 5, label: '5 - Legendaria' }
                 ]} />
                 
-                <NumberInput label={hLabels.total} value={bmsData.header.total} isFloat={true} onChange={(val: number) => updateHeader({ total: val })} />
+                <NumberInput label={hLabels.total} value={bmsData.header.total} isFloat={true} onChange={(val: number) => updateHeader({ total: val })} onBlur={() => commitHistory()} />
                 
-                <SelectInput label={hLabels.lnmode} value={bmsData.header.lnmode ?? ''} onChange={(val: number | undefined) => updateHeader({ lnmode: val })} options={[
+                <SelectInput label={hLabels.lnmode} value={bmsData.header.lnmode ?? ''} onChange={(val: number | undefined) => { updateHeader({ lnmode: val }); commitHistory(); }} options={[
                   { value: '', label: lang === 'ko' ? '없음' : (lang === 'ja' ? 'なし' : 'None') },
                   { value: 1, label: '1 - LN' },
                   { value: 2, label: '2 - CN' },
                   { value: 3, label: '3 - HCN' }
                 ]} />
                 
-                <LnObjInput label={hLabels.lnobj} value={bmsData.header.lnobj} onChange={(val: string) => updateHeader({ lnobj: val })} />
+                <LnObjInput label={hLabels.lnobj} value={bmsData.header.lnobj} onChange={(val: string) => updateHeader({ lnobj: val })} onBlur={() => commitHistory()} />
                 
-                <NumberInput label={hLabels.defexrank} value={bmsData.header.defexrank} isFloat={true} onChange={(val: number) => updateHeader({ defexrank: val })} />
+                <NumberInput label={hLabels.defexrank} value={bmsData.header.defexrank} isFloat={true} onChange={(val: number) => updateHeader({ defexrank: val })} onBlur={() => commitHistory()} />
                 
-                <TextAreaInput label={hLabels.comment} value={bmsData.header.comment} onChange={(val: string) => updateHeader({ comment: val })} rows={2} />
+                <TextAreaInput label={hLabels.comment} value={bmsData.header.comment} onChange={(val: string) => updateHeader({ comment: val })} onBlur={() => commitHistory()} rows={2} />
                 
                 <div className="dropdown-divider" style={{ margin: '5px 0' }}></div>
                 
-                <FileInput label="STAGEFILE" value={bmsData.header.stagefile} onChange={(val: string) => updateHeader({ stagefile: val })} />
-                <FileInput label="BANNER" value={bmsData.header.banner} onChange={(val: string) => updateHeader({ banner: val })} />
-                <FileInput label="BACKBMP" value={bmsData.header.backbmp} onChange={(val: string) => updateHeader({ backbmp: val })} />
-                <FileInput label="WAV00" value={bmsData.header.wav00} onChange={(val: string) => updateHeader({ wav00: val })} />
-                <FileInput label="BMP00" value={bmsData.header.bmp00} onChange={(val: string) => updateHeader({ bmp00: val })} />
-                <FileInput label="PREVIEW" value={bmsData.header.preview} onChange={(val: string) => updateHeader({ preview: val })} />
+                <FileInput label="STAGEFILE" value={bmsData.header.stagefile} onChange={(val: string) => updateHeader({ stagefile: val })} onBlur={() => commitHistory()} />
+                <FileInput label="BANNER" value={bmsData.header.banner} onChange={(val: string) => updateHeader({ banner: val })} onBlur={() => commitHistory()} />
+                <FileInput label="BACKBMP" value={bmsData.header.backbmp} onChange={(val: string) => updateHeader({ backbmp: val })} onBlur={() => commitHistory()} />
+                <FileInput label="WAV00" value={bmsData.header.wav00} onChange={(val: string) => updateHeader({ wav00: val })} onBlur={() => commitHistory()} />
+                <FileInput label="BMP00" value={bmsData.header.bmp00} onChange={(val: string) => updateHeader({ bmp00: val })} onBlur={() => commitHistory()} />
+                <FileInput label="PREVIEW" value={bmsData.header.preview} onChange={(val: string) => updateHeader({ preview: val })} onBlur={() => commitHistory()} />
               </div>
             ) : (
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', textAlign: 'center', marginTop: '10px' }}>
@@ -583,6 +586,7 @@ export const RightSidebar = ({
                   onBlur={() => { 
                     isExpansionFocused.current = false; 
                     handleExpansionCodeChange(expansionText); 
+                    commitHistory();
                   }}
                   placeholder={rTxt.expansionPlaceholder}
                   style={{
@@ -815,7 +819,7 @@ export const RightSidebar = ({
           measure={editingMeasureIndex}
           currentLength={bmsData.measureLengths[editingMeasureIndex] ?? 1}
           onClose={() => setEditingMeasureIndex(null)}
-          onApply={(m, l) => updateMeasureLength(m, l)}
+          onApply={(m, l) => { updateMeasureLength(m, l); commitHistory(); }}
         />
       )}
     </aside>

@@ -21,7 +21,8 @@ import { TimingValueModal } from './components/ui/TimingValueModal';
 import { TimeSpaceModal } from './components/ui/TimeSpaceModal';
 import { TimeBpmModal } from './components/ui/TimeBpmModal';
 import { TimeStopModal } from './components/ui/TimeStopModal';
-import { getSnappedAbsTime as getSnappedAbsTimeUtil } from './utils/coordinateCalculator';
+import { TimeAutoPlaceModal } from './components/ui/TimeAutoPlaceModal';
+import { getSnappedAbsTime as getSnappedAbsTimeUtil, getBmsPosFromAbsTime } from './utils/coordinateCalculator';
 import { useTimeEditOperations } from './hooks/useTimeEditOperations';
 import { useBmsDiff } from './hooks/useBmsDiff';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -122,6 +123,7 @@ function App() {
   const [isTimeSpaceModalOpen, setIsTimeSpaceModalOpen] = useState(false);
   const [isTimeBpmModalOpen, setIsTimeBpmModalOpen] = useState(false);
   const [isTimeStopModalOpen, setIsTimeStopModalOpen] = useState(false);
+  const [isTimeAutoPlaceModalOpen, setIsTimeAutoPlaceModalOpen] = useState(false);
 
   const isTimeDragging = useRef(false);
   const timeDragStart = useRef<number | null>(null);
@@ -274,7 +276,7 @@ function App() {
 
   // References to state to avoid stale closures in requestAnimationFrame
   const bmsDataRef = useRef<BmsData | null>(null);
-  const useBase62Ref = useRef<boolean>(useBase62);
+  const useBase62Ref = useRef<16 | 36 | 62>(useBase62);
   const zoomXRef = useRef<number>(zoomX);
 
   const getActiveLayout = () => {
@@ -378,6 +380,7 @@ function App() {
   const appContainerRef = useRef<HTMLDivElement>(null);
 
   const zoomYRef = useRef<number>(zoomY);
+  const prevZoomYRef = useRef<number>(zoomY);
   const activeToolRef = useRef<string>(activeTool);
   const gridSnapRef = useRef<number>(gridSnap);
   const auxGridSnapRef = useRef<number>(auxGridSnap);
@@ -479,6 +482,26 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const oldZoomY = prevZoomYRef.current;
+    if (oldZoomY !== zoomY) {
+      const canvasHeight = canvasRef.current ? canvasRef.current.height : 600;
+      const centerY = canvasHeight / 2;
+      const targetScrollY = (centerY + scrollY.current) * (zoomY / oldZoomY) - centerY;
+      
+      const currentMeasureOffsets = measureOffsetsRef.current;
+      if (currentMeasureOffsets) {
+        const currentMeasureHeight = BASE_MEASURE_HEIGHT * zoomY;
+        const totalHeight = currentMeasureOffsets.totalLen * currentMeasureHeight + 100;
+        const newMaxScrollY = Math.max(0, totalHeight - canvasHeight);
+        
+        scrollY.current = Math.min(newMaxScrollY, Math.max(MIN_SCROLL_Y, targetScrollY));
+        maxScrollYRef.current = newMaxScrollY;
+      } else {
+        scrollY.current = Math.max(MIN_SCROLL_Y, targetScrollY);
+      }
+      prevZoomYRef.current = zoomY;
+    }
+
     bmsDataRef.current = bmsData;
     useBase62Ref.current = useBase62;
     zoomXRef.current = zoomX;
@@ -2595,7 +2618,7 @@ function App() {
     };
 
     const findNoteAt = () => {
-      const POS_TOLERANCE = 0.05;
+      const POS_TOLERANCE = 1e-5;
       const notes = bmsDataRef.current!.notes;
       const targetNorm = normalizeChannel(actualChannel);
       for (let i = notes.length - 1; i >= 0; i--) {
@@ -2802,7 +2825,8 @@ function App() {
   const {
     handleApplyTimeSpace,
     handleApplyTimeBpm,
-    handleApplyTimeStop
+    handleApplyTimeStop,
+    handleApplyAutoPlace
   } = useTimeEditOperations(
     {
       bmsData,
@@ -2817,6 +2841,46 @@ function App() {
       requestRender
     }
   );
+
+  const handleApplyTimeAutoPlace = (
+    constraints: { baseBeatDenom: number; maxNotes: number }[]
+  ): { success: boolean; errorMsg?: string } => {
+    const activeLayout = getActiveLayout();
+    const availableLanes = activeLayout
+      .filter(l => l.channel !== undefined && (
+        (l.channel >= 0x11 && l.channel <= 0x19) ||
+        (l.channel >= 0x21 && l.channel <= 0x29)
+      ))
+      .map(l => ({ channel: l.channel!, index: (l as any).index || 0 }));
+
+    const res = handleApplyAutoPlace(constraints, availableLanes);
+    if (res.success) {
+      return { success: true };
+    } else {
+      let errorMsg = '';
+      if (res.reason === 'math_impossible' && res.errorAt !== undefined) {
+        const measureOffsets = measureOffsetsRef.current;
+        const measureLengths = bmsDataRef.current?.measureLengths || {};
+        const pos = getBmsPosFromAbsTime(res.errorAt, measureLengths, measureOffsets.offsets);
+        // 기약분수 표현을 위해 위치 계산
+        // 일반적으로 position은 0~1 사이의 값입니다.
+        // 예를 들어 0.25 = 1/4구간, 0.5 = 1/2구간 등
+        // pos.position을 사람이 읽기 편한 위치 텍스트로 치환합니다.
+        let posText = '';
+        if (Math.abs(pos.position - 0) < 1e-4) posText = '시작점';
+        else if (Math.abs(pos.position - 0.25) < 1e-4) posText = '1/4 지점';
+        else if (Math.abs(pos.position - 0.5) < 1e-4) posText = '1/2 지점';
+        else if (Math.abs(pos.position - 0.75) < 1e-4) posText = '3/4 지점';
+        else posText = `${(pos.position * 100).toFixed(1)}% 지점`;
+
+        const formatted = `${pos.measure}마디 ${posText}`;
+        errorMsg = `[수학적 불가능] ${formatted} 부근에 노트가 너무 촘촘하게 배치되어 제약 조건을 만족할 수 없습니다.`;
+      } else {
+        errorMsg = `[재배치 실패] 제약 조건을 만족하는 노트 배치를 찾을 수 없습니다. 조건을 완화하여 다시 시도해 주세요.`;
+      }
+      return { success: false, errorMsg };
+    }
+  };
 
   // 절대 마디 실수값(absTime)에 현재 격자 박자(gridSnap)를 적용하여 정교하게 스냅된 실수값을 구합니다.
   const getSnappedAbsTime = (absTime: number): number => {
@@ -2870,7 +2934,7 @@ function App() {
   handleNew={handleNew} handleOpen={handleOpen} handleSave={handleSave} 
   handleSaveAs={handleSaveAs} handleRecentClick={handleRecentClick} 
   handleExit={handleExit} isDirty={isDirty} hasBmsData={!!bmsData} 
-  recentFiles={recentFiles} useBase62={useBase62} 
+  recentFiles={recentFiles} 
   handleUndo={handleUndo} handleRedo={handleRedo} handleCut={handleCut}
   handleCopy={handleCopy} handlePaste={handlePaste} handleDelete={handleDelete}
   handleSelectAll={handleSelectAll} handleGoToMeasure={() => setIsGoToMeasureOpen(true)}
@@ -2894,6 +2958,7 @@ function App() {
         onOpenTimeSpaceModal={() => setIsTimeSpaceModalOpen(true)}
         onOpenTimeBpmModal={() => setIsTimeBpmModalOpen(true)}
         onOpenTimeStopModal={() => setIsTimeStopModalOpen(true)}
+        onOpenTimeAutoPlaceModal={() => setIsTimeAutoPlaceModalOpen(true)}
       />
       <div 
         className="resizer resizer-left"
@@ -3003,6 +3068,16 @@ function App() {
     endAbs={timeSelection ? timeSelection.end : 0}
     hasNotesInside={hasNotesInsideStopArea}
     onApply={handleApplyTimeStop}
+  />
+)}
+
+{isTimeAutoPlaceModalOpen && (
+  <TimeAutoPlaceModal
+    isOpen={true}
+    onClose={() => setIsTimeAutoPlaceModalOpen(false)}
+    startAbs={timeSelection ? timeSelection.start : 0}
+    endAbs={timeSelection ? timeSelection.end : 0}
+    onApply={handleApplyTimeAutoPlace}
   />
 )}
 

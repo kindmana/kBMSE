@@ -11,6 +11,9 @@ export interface HistoryEntry {
   measureLengths?: Record<number, number>;
   stops?: Record<number, number>;
   bpms?: Record<number, number>;
+  header?: BmsData['header'];
+  wavs?: Record<number, string>;
+  bmps?: Record<number, string>;
 }
 
 export function detectBase62Needed(bmsContent: string): boolean {
@@ -63,7 +66,7 @@ export interface EditorSettings {
   wheelClickBehavior: 'drag' | 'autoscroll';
   language: 'en' | 'ko' | 'ja';
   scrollDirection: 'normal' | 'reverse';
-  base62Mode: 'auto' | '36' | '62';
+  base62Mode: 'auto' | '16' | '36' | '62';
   volume: number; // 0 to 100
 
   // Visual Options
@@ -184,8 +187,8 @@ interface EditorState {
   updateSettings: (updates: Partial<EditorSettings>) => void;
 
   // Settings
-  useBase62: boolean;
-  setUseBase62: (val: boolean) => void;
+  useBase62: 16 | 36 | 62;
+  setUseBase62: (val: 16 | 36 | 62) => void;
   
   // Editor State
   activeTool: string;
@@ -300,12 +303,14 @@ export const useEditorStore = create<EditorState>((set) => ({
     // Sync useBase62 based on base62Mode change
     let base62Update = {};
     if (updates.base62Mode !== undefined) {
-      if (updates.base62Mode === '36') {
-        base62Update = { useBase62: false };
+      if (updates.base62Mode === '16') {
+        base62Update = { useBase62: 16 };
+      } else if (updates.base62Mode === '36') {
+        base62Update = { useBase62: 36 };
       } else if (updates.base62Mode === '62') {
-        base62Update = { useBase62: true };
+        base62Update = { useBase62: 62 };
       } else if (updates.base62Mode === 'auto' && state.rawBmsContent) {
-        base62Update = { useBase62: detectBase62Needed(state.rawBmsContent) };
+        base62Update = { useBase62: detectBase62Needed(state.rawBmsContent) ? 62 : 36 };
       }
     }
 
@@ -325,7 +330,7 @@ export const useEditorStore = create<EditorState>((set) => ({
     };
   }),
 
-  useBase62: true, // Default to true as per user request
+  useBase62: 62, // Default to base 62
   setUseBase62: (val) => set({ useBase62: val }),
   
   lockVerticalPosition: false,
@@ -510,6 +515,9 @@ export const useEditorStore = create<EditorState>((set) => ({
     const currentMeasureLengths = { ...state.bmsData.measureLengths };
     const currentStops = { ...state.bmsData.stops };
     const currentBpms = { ...state.bmsData.bpms };
+    const currentHeader = { ...state.bmsData.header };
+    const currentWavs = { ...state.bmsData.wavs };
+    const currentBmps = { ...state.bmsData.bmps };
     
     const lastHistory = state.history[state.historyIndex];
     if (
@@ -520,7 +528,10 @@ export const useEditorStore = create<EditorState>((set) => ({
       lastHistory.player === currentPlayer &&
       JSON.stringify(lastHistory.measureLengths) === JSON.stringify(currentMeasureLengths) &&
       JSON.stringify(lastHistory.stops) === JSON.stringify(currentStops) &&
-      JSON.stringify(lastHistory.bpms) === JSON.stringify(currentBpms)
+      JSON.stringify(lastHistory.bpms) === JSON.stringify(currentBpms) &&
+      JSON.stringify(lastHistory.header) === JSON.stringify(currentHeader) &&
+      JSON.stringify(lastHistory.wavs) === JSON.stringify(currentWavs) &&
+      JSON.stringify(lastHistory.bmps) === JSON.stringify(currentBmps)
     ) {
       return state;
     }
@@ -533,7 +544,10 @@ export const useEditorStore = create<EditorState>((set) => ({
       player: currentPlayer,
       measureLengths: currentMeasureLengths,
       stops: currentStops,
-      bpms: currentBpms
+      bpms: currentBpms,
+      header: currentHeader,
+      wavs: currentWavs,
+      bmps: currentBmps
     });
     
     let nextLastSaved = state.lastSavedHistoryIndex;
@@ -567,10 +581,12 @@ export const useEditorStore = create<EditorState>((set) => ({
         measureLengths: entry.measureLengths ? { ...entry.measureLengths } : state.bmsData.measureLengths,
         stops: entry.stops ? { ...entry.stops } : state.bmsData.stops,
         bpms: entry.bpms ? { ...entry.bpms } : state.bmsData.bpms,
-        header: {
+        header: entry.header ? { ...entry.header } : {
           ...state.bmsData.header,
           player: entry.player
-        }
+        },
+        wavs: entry.wavs ? { ...entry.wavs } : state.bmsData.wavs,
+        bmps: entry.bmps ? { ...entry.bmps } : state.bmsData.bmps
       },
       selectedNotes: []
     };
@@ -590,10 +606,12 @@ export const useEditorStore = create<EditorState>((set) => ({
         measureLengths: entry.measureLengths ? { ...entry.measureLengths } : state.bmsData.measureLengths,
         stops: entry.stops ? { ...entry.stops } : state.bmsData.stops,
         bpms: entry.bpms ? { ...entry.bpms } : state.bmsData.bpms,
-        header: {
+        header: entry.header ? { ...entry.header } : {
           ...state.bmsData.header,
           player: entry.player
-        }
+        },
+        wavs: entry.wavs ? { ...entry.wavs } : state.bmsData.wavs,
+        bmps: entry.bmps ? { ...entry.bmps } : state.bmsData.bmps
       },
       selectedNotes: []
     };

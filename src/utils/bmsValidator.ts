@@ -14,7 +14,7 @@ export interface BmsValidationError {
  * Validate BMS Data for critical structural integrity and logic violations before save
  * @returns Array of detailed BmsValidationError objects. If empty, validation passed successfully.
  */
-export function validateBmsData(bmsData: BmsData, useBase62: boolean): BmsValidationError[] {
+export function validateBmsData(bmsData: BmsData, useBase62: 16 | 36 | 62 | boolean): BmsValidationError[] {
   const errors: BmsValidationError[] = [];
   if (!bmsData) return errors;
 

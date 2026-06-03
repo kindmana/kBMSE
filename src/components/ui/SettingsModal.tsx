@@ -520,7 +520,7 @@ export const SettingsModal = ({ isOpen, onClose, initialTab }: SettingsModalProp
                 {/* Language Select */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 500 }}>
-                    {t("언어 설정 (Language)", "Language", "言語設定 (Language)")}
+                    {t("언어(Language)", "Language", "言語(Language)")}
                   </span>
                   <select
                     value={settings.language}
@@ -545,7 +545,7 @@ export const SettingsModal = ({ isOpen, onClose, initialTab }: SettingsModalProp
                 {/* Base62 Mode Select */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 500 }}>
-                    {t("BMS 36/62진법 인식 모드", "36/62 Base Mode", "BMS 36/62進数認識モード")}
+                    {t("BMS 진법 인식", "BMS Base Mode", "BMS 進数認識")}
                   </span>
                   <select
                     value={settings.base62Mode}
@@ -562,15 +562,16 @@ export const SettingsModal = ({ isOpen, onClose, initialTab }: SettingsModalProp
                     }}
                   >
                     <option value="auto">{t("자동 판정", "Auto Detect", "自動判定")}</option>
-                    <option value="36">36진법 고정 (36-Base)</option>
-                    <option value="62">62진법 고정 (62-Base)</option>
+                    <option value="16">{t("16진법 고정 (16-Base)", "16-Base", "16進数固定 (16-Base)")}</option>
+                    <option value="36">{t("36진법 고정 (36-Base)", "36-Base", "36進数固定 (36-Base)")}</option>
+                    <option value="62">{t("62진법 고정 (62-Base)", "62-Base", "62進数固定 (62-Base)")}</option>
                   </select>
                 </div>
 
                 {/* Encoding */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 500 }}>
-                    {t("BMS 로딩 인코딩", "File Encoding", "BMS 読み込みエンコード")}
+                    {t("문자 인코더", "Text Encoder", "文字エンコーダ")}
                   </span>
                   <select
                     value={settings.encoding}

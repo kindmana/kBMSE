@@ -88,7 +88,14 @@ const formatFraction = (pos: number, lcmVal: number): string => {
   return `${numerator}/${lcmVal}`;
 };
 
-const calculateNoteBeats = (bmsData: BmsData, useBase62: boolean): { note: BmsNote; beat: number; time: number; wavName: string }[] => {
+const resolveBaseBmsMode = (mode: 'auto' | '16' | '36' | '62', filename: string): 16 | 36 | 62 => {
+  if (mode === '16') return 16;
+  if (mode === '36') return 36;
+  if (mode === '62') return 62;
+  return filename.toLowerCase().endsWith('.bml') ? 62 : 36;
+};
+
+const calculateNoteBeats = (bmsData: BmsData, useBase62: 16 | 36 | 62 | boolean): { note: BmsNote; beat: number; time: number; wavName: string }[] => {
   const result: { note: BmsNote; beat: number; time: number; wavName: string }[] = [];
   
   const timeline = calculateTimeline(bmsData);
@@ -143,10 +150,16 @@ const calculateNoteBeats = (bmsData: BmsData, useBase62: boolean): { note: BmsNo
   }
   
   for (const note of bmsData.notes) {
+    const isBgaResource = 
+      note.channel === 0x04 || // BGA
+      note.channel === 0x06 || // POR
+      note.channel === 0x07;   // LYR
+
     const isNormalKeysound = 
       note.channel === 1 || 
       (note.channel >= 11 && note.channel <= 29) || 
-      (note.channel >= 31 && note.channel <= 49);
+      (note.channel >= 31 && note.channel <= 49) ||
+      isBgaResource;
       
     const isLnStartKeysound = 
       lnChannels.includes(note.channel) && 
@@ -160,7 +173,11 @@ const calculateNoteBeats = (bmsData: BmsData, useBase62: boolean): { note: BmsNo
       
     if (isLnobjEnd) continue;
     
-    const wavName = bmsData.wavs[note.value] || '';
+    // For BGA/POOR/LAYER, query resource name from bmps. For keysounds, query from wavs.
+    const wavName = isBgaResource 
+      ? (bmsData.bmps[note.value] || '') 
+      : (bmsData.wavs[note.value] || '');
+      
     if (!wavName) continue;
     
     const measureLen = bmsData.measureLengths[note.measure] !== undefined ? bmsData.measureLengths[note.measure] : 1.0;
@@ -181,8 +198,8 @@ const calculateNoteBeats = (bmsData: BmsData, useBase62: boolean): { note: BmsNo
 const runMisalignmentCheck = (
   baseBms: BmsData, 
   currentBms: BmsData, 
-  baseBmsUseBase62: boolean, 
-  useBase62: boolean
+  baseBmsUseBase62: 16 | 36 | 62 | boolean, 
+  useBase62: 16 | 36 | 62 | boolean
 ): DiffResultItem[] => {
   const basePrecomputed = calculateNoteBeats(baseBms, baseBmsUseBase62);
   const currentPrecomputed = calculateNoteBeats(currentBms, useBase62);
@@ -455,7 +472,7 @@ export const BmsDiffModal = ({
 
   useEffect(() => {
     if (baseBms && bmsData) {
-      const baseBmsUseBase62 = settings.base62Mode === '62' || (settings.base62Mode === 'auto' && baseFileName.endsWith('.bml'));
+      const baseBmsUseBase62 = resolveBaseBmsMode(settings.base62Mode, baseFileName);
       const results = runMisalignmentCheck(baseBms, bmsData, baseBmsUseBase62, useBase62);
       setDiffResults(results);
       setIsCompared(true);
@@ -489,7 +506,7 @@ export const BmsDiffModal = ({
           const activeEncoding = settings.encoding || 'shift-jis';
           const decoder = new TextDecoder(activeEncoding);
           const text = decoder.decode(new Uint8Array(result.content_bytes));
-          const parsed = parseBms(text, settings.base62Mode === '62' || (settings.base62Mode === 'auto' && result.file_name.endsWith('.bml')));
+          const parsed = parseBms(text, resolveBaseBmsMode(settings.base62Mode, result.file_name));
           setBaseBms(parsed);
           setBaseFileName(result.file_name);
         }
@@ -514,7 +531,7 @@ export const BmsDiffModal = ({
         reader.onload = (evt) => {
           const content = evt.target?.result as string;
           try {
-            const parsed = parseBms(content, settings.base62Mode === '62' || (settings.base62Mode === 'auto' && file.name.endsWith('.bml')));
+            const parsed = parseBms(content, resolveBaseBmsMode(settings.base62Mode, file.name));
             setBaseBms(parsed);
           } catch (err) {
             console.error(err);
@@ -540,7 +557,7 @@ export const BmsDiffModal = ({
         reader.onload = (readerEvt) => {
           const content = readerEvt.target?.result as string;
           try {
-            const parsed = parseBms(content, settings.base62Mode === '62' || (settings.base62Mode === 'auto' && file.name.endsWith('.bml')));
+            const parsed = parseBms(content, resolveBaseBmsMode(settings.base62Mode, file.name));
             setBaseBms(parsed);
           } catch (err) {
             console.error(err);
@@ -855,7 +872,7 @@ export const BmsDiffModal = ({
                       borderLeftColor = '#22c55e';
                     }
 
-                    const baseBmsUseBase62 = settings.base62Mode === '62' || (settings.base62Mode === 'auto' && baseFileName.endsWith('.bml'));
+                    const baseBmsUseBase62 = resolveBaseBmsMode(settings.base62Mode, baseFileName);
                     const baseKeyId = item.baseNote ? encodeBmsValue(item.baseNote.value, baseBmsUseBase62) : '';
                     const diffKeyId = item.diffNote ? encodeBmsValue(item.diffNote.value, useBase62) : '';
 

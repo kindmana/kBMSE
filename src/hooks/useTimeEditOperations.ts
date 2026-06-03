@@ -438,9 +438,193 @@ export function useTimeEditOperations(
     requestRender();
   };
 
+  // 4. 노트 자동 배치 (Auto Place Notes) - 제약 조건 기반
+  const handleApplyAutoPlace = (
+    constraints: { baseBeatDenom: number; maxNotes: number }[],
+    availableLanes: { channel: number; index: number }[]
+  ): { success: boolean; reason?: 'math_impossible' | 'no_solution'; errorAt?: number } => {
+    if (!timeSelection || !bmsData) {
+      return { success: false, reason: 'no_solution' };
+    }
+    const { start: startAbs, end: endAbs } = timeSelection;
+    const offsets = measureOffsets.offsets;
+    const measureLengths = bmsData.measureLengths || {};
+
+    // 1. 대상 영역 내의 건반 레인 노트들 수집 및 시간순 정렬
+    const targetChannels = new Set(availableLanes.map(l => l.channel));
+
+    const targetNotesWithAbs = bmsData.notes
+      .filter(note => targetChannels.has(note.channel))
+      .map(note => {
+        const absTime = getAbsTime(note.measure, note.position, measureLengths, offsets);
+        return { note, absTime };
+      })
+      .filter(item => item.absTime >= startAbs - 1e-9 && item.absTime <= endAbs + 1e-9);
+
+    if (targetNotesWithAbs.length === 0) {
+      return { success: true };
+    }
+
+    targetNotesWithAbs.sort((a, b) => a.absTime - b.absTime);
+
+    const L = availableLanes.length;
+    if (L === 0) {
+      return { success: false, reason: 'math_impossible', errorAt: targetNotesWithAbs[0].absTime };
+    }
+
+    // 2. 비둘기집 원리(Pigeonhole Principle)에 의한 수학적 불가능 사전 검증
+    // 제약조건들 중 최대 beatWindow 크기 계산
+    let maxBeatWindow = 0;
+    constraints.forEach(c => {
+      if (c.baseBeatDenom > 0 && c.maxNotes > 0) {
+        const w = (1.0 / c.baseBeatDenom) * c.maxNotes;
+        if (w > maxBeatWindow) maxBeatWindow = w;
+      }
+    });
+
+    for (const c of constraints) {
+      if (c.baseBeatDenom <= 0 || c.maxNotes <= 0) continue;
+      const beatWindow = (1.0 / c.baseBeatDenom) * c.maxNotes;
+
+      for (let i = 0; i < targetNotesWithAbs.length; i++) {
+        const tEnd = targetNotesWithAbs[i].absTime;
+        const tStart = tEnd - beatWindow + 1e-9;
+
+        // 드래그 구간 내의 노트 개수
+        let count = 0;
+        for (let j = 0; j <= i; j++) {
+          if (targetNotesWithAbs[j].absTime >= tStart) {
+            count++;
+          }
+        }
+
+        // 드래그 구간 이전 영역 [tStart, startAbs - 1e-9) 에 속하는 기존 고정 노트들의 수
+        const fixedCountBefore = bmsData.notes
+          .filter(note => targetChannels.has(note.channel))
+          .map(note => getAbsTime(note.measure, note.position, measureLengths, offsets))
+          .filter(t => t >= tStart && t < startAbs - 1e-9)
+          .length;
+
+        // 해당 윈도우 안에 배치될 수 있는 한도(L * N)를 초과하는 경우
+        if (count + fixedCountBefore > L * c.maxNotes) {
+          return {
+            success: false,
+            reason: 'math_impossible',
+            errorAt: tEnd
+          };
+        }
+      }
+    }
+
+    // 3. 난수 셔플 시도 (최대 300회)
+    const constraintList = constraints.filter(c => c.baseBeatDenom > 0 && c.maxNotes > 0);
+    let finalPlacedNotes: BmsNote[] | null = null;
+
+    for (let trial = 0; trial < 300; trial++) {
+      const tempPlaced: { note: BmsNote; absTime: number; channel: number; index: number }[] = [];
+      let trialSuccess = true;
+
+      // 각 레인의 노트 배정 이력 시간 기록 맵 (채널 번호를 키로 사용)
+      const laneHistory = new Map<number, number[]>();
+      availableLanes.forEach(lane => {
+        laneHistory.set(lane.channel, []);
+      });
+
+      // 드래그 구간 이전 영역의 기존 고정 노트들을 맵에 미리 등록
+      const previousNotes = bmsData.notes
+        .filter(note => targetChannels.has(note.channel))
+        .map(note => {
+          const absTime = getAbsTime(note.measure, note.position, measureLengths, offsets);
+          return { note, absTime };
+        })
+        .filter(item => item.absTime >= startAbs - maxBeatWindow - 1e-9 && item.absTime < startAbs - 1e-9);
+
+      previousNotes.forEach(item => {
+        const channel = item.note.channel;
+        if (laneHistory.has(channel)) {
+          laneHistory.get(channel)!.push(item.absTime);
+        }
+      });
+
+      laneHistory.forEach(history => {
+        history.sort((a, b) => a - b);
+      });
+
+      for (const item of targetNotesWithAbs) {
+        // 사용 가능한 레인 후보를 무작위로 섞음
+        const shuffledLanes = [...availableLanes].sort(() => Math.random() - 0.5);
+        let selectedLane: typeof availableLanes[0] | null = null;
+
+        for (const lane of shuffledLanes) {
+          const history = laneHistory.get(lane.channel) || [];
+
+          let constraintPassed = true;
+          for (const c of constraintList) {
+            const beatWindow = (1.0 / c.baseBeatDenom) * c.maxNotes;
+            const lowerBound = item.absTime - beatWindow + 1e-9;
+            const count = history.filter(t => t >= lowerBound).length;
+
+            if (count + 1 > c.maxNotes) {
+              constraintPassed = false;
+              break;
+            }
+          }
+
+          if (constraintPassed) {
+            selectedLane = lane;
+            break;
+          }
+        }
+
+        if (selectedLane) {
+          laneHistory.get(selectedLane.channel)!.push(item.absTime);
+          tempPlaced.push({
+            note: item.note,
+            absTime: item.absTime,
+            channel: selectedLane.channel,
+            index: selectedLane.index
+          });
+        } else {
+          trialSuccess = false;
+          break;
+        }
+      }
+
+      if (trialSuccess) {
+        finalPlacedNotes = tempPlaced.map(item => ({
+          ...item.note,
+          channel: item.channel,
+          index: item.index
+        }));
+        break;
+      }
+    }
+
+    if (!finalPlacedNotes) {
+      return { success: false, reason: 'no_solution' };
+    }
+
+    // 4. 원래의 bmsData 복제 및 노트 업데이트 후 상태에 반영
+    const targetIds = new Set(targetNotesWithAbs.map(item => item.note.id));
+    const cleanNotes = bmsData.notes.filter(note => !targetIds.has(note.id));
+    
+    const newBmsData: BmsData = {
+      ...bmsData,
+      notes: [...cleanNotes, ...finalPlacedNotes]
+    };
+
+    useEditorStore.setState({ bmsData: newBmsData });
+    commitHistory();
+    setTimeSelection(null);
+    requestRender();
+
+    return { success: true };
+  };
+
   return {
     handleApplyTimeSpace,
     handleApplyTimeBpm,
-    handleApplyTimeStop
+    handleApplyTimeStop,
+    handleApplyAutoPlace
   };
 }

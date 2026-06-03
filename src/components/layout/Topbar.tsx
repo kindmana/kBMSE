@@ -17,7 +17,6 @@ interface TopbarProps {
   isDirty: boolean;
   hasBmsData: boolean;
   recentFiles: RecentFile[];
-  useBase62: boolean;
   
   // Edit Handlers
   handleUndo: () => void;
@@ -44,7 +43,6 @@ export const Topbar = ({
   isDirty,
   hasBmsData,
   recentFiles,
-  useBase62,
   handleUndo,
   handleRedo,
   handleCut,
@@ -439,11 +437,7 @@ export const Topbar = ({
           )}
         </div>
       </div>
-      <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '10px', paddingRight: '12px' }}>
-        <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', background: 'rgba(255,255,255,0.05)', padding: '4px 8px', borderRadius: '4px', border: '1px solid var(--border-color)' }}>
-          {t.mode}: {useBase62 ? '62-Base' : '36-Base'}
-        </span>
-      </div>
+      {/* Mode indicator removed */}
     </header>
   );
 };
