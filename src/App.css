@@ -65,12 +65,14 @@ body, html, #root {
 }
 
 .topbar-logo {
-  font-weight: 700;
-  font-size: 1.2rem;
-  background: linear-gradient(to right, #818cf8, #c084fc);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+}
+
+.topbar-logo img {
+  height: 32px;
+  object-fit: contain;
+  display: block;
 }
 
 .topbar-menu {

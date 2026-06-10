@@ -2254,12 +2254,17 @@ function App() {
           const upperAbs = Math.max(startAbsolutePos, endAbsolutePos);
 
           const overlappingUpdates: { id: string, updates: Partial<BmsNote> }[] = [];
+          const notesToDelete: string[] = [];
+
           bmsDataRef.current.notes.forEach(note => {
             if (normalizeChannel(note.channel) === normalizeChannel(actualChannel) && 
                 (note.channel !== 0x01 || note.index === actualIndex)) {
               const noteMeasureLen = bmsDataRef.current!.measureLengths[note.measure] ?? 1;
               const noteAbs = measureOffsetsRef.current.offsets[note.measure] + note.position * noteMeasureLen;
-              if (noteAbs >= lowerAbs - 1e-6 && noteAbs <= upperAbs + 1e-6) {
+              
+              if (Math.abs(noteAbs - lowerAbs) < 1e-6 || Math.abs(noteAbs - upperAbs) < 1e-6) {
+                notesToDelete.push(note.id);
+              } else if (noteAbs > lowerAbs + 1e-6 && noteAbs < upperAbs - 1e-6) {
                 // BGM 인덱스 분배
                 let bgmIndex = 0;
                 if (note.channel >= 0x11 && note.channel <= 0x19) {
@@ -2285,6 +2290,9 @@ function App() {
             }
           });
 
+          if (notesToDelete.length > 0) {
+            removeNotes(notesToDelete);
+          }
           if (overlappingUpdates.length > 0) {
             updateNotes(overlappingUpdates);
           }
@@ -2329,6 +2337,7 @@ function App() {
         const activeLayout = getActiveLayout();
         const noteHeight = settingsRef.current.noteHeight ?? 12;
 
+        // 1. 일반 노트(및 단독 노드)의 드래그 박스 충돌 판정
         bmsDataRef.current.notes.forEach(note => {
           let targetLaneIndex = getTargetLaneIndex(activeLayout, note.channel, note.index);
           if (targetLaneIndex === -1) return;
@@ -2346,10 +2355,55 @@ function App() {
           }
         });
 
+        // 2. 롱노트 몸통(Body) 드래그 박스 충돌 판정
+        const currentLongNotePairs = longNotePairsRef.current || [];
+        currentLongNotePairs.forEach(pair => {
+          const { start, end } = pair;
+          let targetLaneIndex = getTargetLaneIndex(activeLayout, start.channel, start.index);
+          if (targetLaneIndex === -1) return;
+
+          let laneX = 50;
+          for (let i = 0; i < targetLaneIndex; i++) laneX += activeLayout[i].width * currentZoomX;
+          const lWidth = activeLayout[targetLaneIndex].width * currentZoomX;
+
+          // X축 충돌 확인
+          if (x1 <= laneX + lWidth && x2 >= laneX) {
+            const startMeasureLen = bmsDataRef.current!.measureLengths?.[start.measure] ?? 1;
+            const endMeasureLen = bmsDataRef.current!.measureLengths?.[end.measure] ?? 1;
+
+            const startAbsolutePos = measureOffsetsRef.current.offsets[start.measure] + start.position * startMeasureLen;
+            const endAbsolutePos = measureOffsetsRef.current.offsets[end.measure] + end.position * endMeasureLen;
+
+            const startY = -startAbsolutePos * currentMeasureHeight;
+            const endY = -endAbsolutePos * currentMeasureHeight;
+
+            const yTop = Math.min(startY, endY);
+            const yBottom = Math.max(startY, endY);
+
+            // Y축 충돌 확인 (음수 Y 좌표계이므로 yTop이 더 작고 위쪽임)
+            if (y1 <= yBottom && y2 >= yTop - noteHeight) {
+              selectedIds.push(start.id);
+              selectedIds.push(end.id);
+            }
+          }
+        });
+
+        // 3. 롱노트의 파트너 강제 선택 (시작/끝 쌍 보장)
+        currentLongNotePairs.forEach(pair => {
+          const hasStart = selectedIds.includes(pair.start.id);
+          const hasEnd = selectedIds.includes(pair.end.id);
+          if (hasStart || hasEnd) {
+            if (!hasStart) selectedIds.push(pair.start.id);
+            if (!hasEnd) selectedIds.push(pair.end.id);
+          }
+        });
+
+        const uniqueSelectedIds = [...new Set(selectedIds)];
+
         if (e.shiftKey) {
-           setSelectedNotes([...new Set([...selectedNotesRef.current, ...selectedIds])]);
+           setSelectedNotes([...new Set([...selectedNotesRef.current, ...uniqueSelectedIds])]);
         } else {
-           setSelectedNotes(selectedIds);
+           setSelectedNotes(uniqueSelectedIds);
         }
       }
       
@@ -2635,8 +2689,13 @@ function App() {
 
     if (activeToolRef.current === 'write') {
       if (actualChannel !== undefined) {
-        // Only write if there's no note there
-        if (!findNoteAt()) {
+        const existingNote = findNoteAt();
+        const canWriteOnExisting = existingNote && (
+          (existingNote.channel >= 0x11 && existingNote.channel <= 0x19) ||
+          (existingNote.channel >= 0x21 && existingNote.channel <= 0x29)
+        );
+
+        if (!existingNote || canWriteOnExisting) {
           const isPlayable = (actualChannel >= 0x11 && actualChannel <= 0x19) || 
                              (actualChannel >= 0x21 && actualChannel <= 0x29);
           if (isPlayable) {
@@ -2651,7 +2710,7 @@ function App() {
             writeStartBmsPos.current = startPos;
             writeCurrentBmsPos.current = startPos;
             requestRender();
-          } else {
+          } else if (!existingNote) {
             // 실수 타이밍 수치 동적 입력창 기믹 (BPM, STOP, SCROLL 영역 대응)
             const isTimingChannel = actualChannel === 0x08 || actualChannel === 0x09 || actualChannel === 256;
             if (isTimingChannel) {

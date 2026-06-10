@@ -16,6 +16,56 @@ export interface HistoryEntry {
   bmps?: Record<number, string>;
 }
 
+export function getNotesAfterRemoval(notes: BmsNote[], idsToRemove: string[]): BmsNote[] {
+  const lnChannels = [
+    0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,
+    0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69
+  ];
+  const pairs: { start: BmsNote; end: BmsNote }[] = [];
+  
+  lnChannels.forEach(ch => {
+    const chNotes = notes.filter(n => n.channel === ch).sort((a, b) => {
+      if (a.measure !== b.measure) return a.measure - b.measure;
+      return a.position - b.position;
+    });
+    for (let i = 0; i < chNotes.length; i += 2) {
+      if (i + 1 < chNotes.length) {
+        pairs.push({ start: chNotes[i], end: chNotes[i + 1] });
+      }
+    }
+  });
+
+  let activeIdsToRemove = [...idsToRemove];
+  let notesToUpdate = [...notes];
+
+  pairs.forEach(pair => {
+    const hasStart = activeIdsToRemove.includes(pair.start.id);
+    const hasEnd = activeIdsToRemove.includes(pair.end.id);
+    
+    if (hasStart || hasEnd) {
+      // 롱노트 해제 시 무조건 끝 부분 노드(end)를 삭제 대상으로 추가
+      if (!activeIdsToRemove.includes(pair.end.id)) {
+        activeIdsToRemove.push(pair.end.id);
+      }
+      // 시작 부분 노드(start)는 절대 지워지지 않도록 제외
+      activeIdsToRemove = activeIdsToRemove.filter(id => id !== pair.start.id);
+      
+      // 시작 부분 노드를 일반 노트 채널로 변환
+      notesToUpdate = notesToUpdate.map(n => {
+        if (n.id === pair.start.id) {
+          return {
+            ...n,
+            channel: n.channel - 0x40
+          };
+        }
+        return n;
+      });
+    }
+  });
+
+  return notesToUpdate.filter(n => !activeIdsToRemove.includes(n.id));
+}
+
 export function detectBase62Needed(bmsContent: string): boolean {
   const lines = bmsContent.split('\n');
   for (const line of lines) {
@@ -642,7 +692,7 @@ export const useEditorStore = create<EditorState>((set) => ({
     return {
       bmsData: {
         ...state.bmsData,
-        notes: state.bmsData.notes.filter(n => n.id !== id)
+        notes: getNotesAfterRemoval(state.bmsData.notes, [id])
       }
     };
   }),
@@ -652,7 +702,7 @@ export const useEditorStore = create<EditorState>((set) => ({
     return {
       bmsData: {
         ...state.bmsData,
-        notes: state.bmsData.notes.filter(n => !ids.includes(n.id))
+        notes: getNotesAfterRemoval(state.bmsData.notes, ids)
       }
     };
   }),

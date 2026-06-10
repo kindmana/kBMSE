@@ -4,6 +4,8 @@ import { useEditorStore } from '../../store/editorStore';
 import { getAudioContext } from '../../utils/audioPlayer';
 import { translations } from '../../constants/translations';
 import { HIDDEN_LANES, KeyMode } from '../../constants/layout';
+import logo from '../../assets/logo.png';
+
 
 interface TopbarProps {
   isFileMenuOpen: boolean;
@@ -208,7 +210,9 @@ export const Topbar = ({
 
   return (
     <header className="topbar" ref={topbarRef}>
-      <div className="topbar-logo">kBMSE</div>
+      <div className="topbar-logo">
+        <img src={logo} alt="kBMSE" />
+      </div>
       <div className="topbar-menu">
         {/* File Menu */}
         <div style={{ position: 'relative' }}>
