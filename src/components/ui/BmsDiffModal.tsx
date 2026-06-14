@@ -445,6 +445,16 @@ const getBmsTitleString = (bms: BmsData | null, defaultLabel: string) => {
   return title || subtitle || defaultLabel;
 };
 
+const getBmsArtistString = (bms: BmsData | null) => {
+  if (!bms) return '';
+  const artist = bms.header.artist || '';
+  const subartist = bms.header.subartist || '';
+  if (artist && subartist) {
+    return `${artist} / ${subartist}`;
+  }
+  return artist || subartist || '';
+};
+
 export const BmsDiffModal = ({ 
   isOpen, 
   onClose, 
@@ -706,20 +716,38 @@ export const BmsDiffModal = ({
               padding: '12px 16px',
               display: 'flex',
               flexDirection: 'column',
-              gap: '8px',
+              gap: '10px',
               fontSize: '0.8rem'
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ color: 'var(--text-secondary)', fontWeight: 500, width: '45px' }}>{t("원본:", "Base:")}</span>
-                <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
-                  {getBmsTitleString(baseBms, t("-- 불러오지 않음 --", "-- Not Loaded --"))}
-                </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ color: 'var(--text-secondary)', fontWeight: 500, width: '45px' }}>{t("원본:", "Base:")}</span>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
+                    {getBmsTitleString(baseBms, t("-- 불러오지 않음 --", "-- Not Loaded --"))}
+                  </span>
+                </div>
+                {baseBms && (baseBms.header.artist || baseBms.header.subartist) && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingLeft: '53px' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
+                      {getBmsArtistString(baseBms)}
+                    </span>
+                  </div>
+                )}
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderTop: '1px solid rgba(255,255,255,0.03)', paddingTop: '6px' }}>
-                <span style={{ color: 'var(--text-secondary)', fontWeight: 500, width: '45px' }}>{t("차분:", "Diff:")}</span>
-                <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
-                  {getBmsTitleString(bmsData, t("-- 작업 중 없음 --", "-- Empty --"))}
-                </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', borderTop: '1px solid rgba(255,255,255,0.03)', paddingTop: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ color: 'var(--text-secondary)', fontWeight: 500, width: '45px' }}>{t("차분:", "Diff:")}</span>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
+                    {getBmsTitleString(bmsData, t("-- 작업 중 없음 --", "-- Empty --"))}
+                  </span>
+                </div>
+                {bmsData && (bmsData.header.artist || bmsData.header.subartist) && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingLeft: '53px' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
+                      {getBmsArtistString(bmsData)}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           )}

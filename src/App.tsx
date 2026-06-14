@@ -652,44 +652,76 @@ function App() {
   const longNotePairs = useMemo(() => {
     if (!bmsData) return [];
     const pairs: { start: BmsNote, end: BmsNote }[] = [];
-    
-    // 1. Channel 51-59, 61-69 (Traditional LN)
-    const lnNotesByChannel = new Map<number, BmsNote[]>();
+    const visited = new Set<string>();
+
+    // 1. partnerId가 이미 존재하는 노트들을 짝지음
     for (const note of bmsData.notes) {
-      if ((note.channel >= 0x51 && note.channel <= 0x59) || (note.channel >= 0x61 && note.channel <= 0x69)) {
-        if (!lnNotesByChannel.has(note.channel)) lnNotesByChannel.set(note.channel, []);
-        lnNotesByChannel.get(note.channel)!.push(note);
+      if (note.partnerId && !visited.has(note.id)) {
+        const partner = bmsData.notes.find(n => n.id === note.partnerId);
+        if (partner && !visited.has(partner.id)) {
+          visited.add(note.id);
+          visited.add(partner.id);
+          // 시작점과 끝점 구분 (measure + position 순서 기준)
+          const t1 = note.measure + note.position;
+          const t2 = partner.measure + partner.position;
+          if (t1 <= t2) {
+            pairs.push({ start: note, end: partner });
+          } else {
+            pairs.push({ start: partner, end: note });
+          }
+        }
       }
     }
-    
-    lnNotesByChannel.forEach(notes => {
+
+    // 2. 만약 partnerId가 누락된 롱노트가 있다면, 시간 순으로 정렬하여 짝을 맞추고 partnerId를 주입해주는 폴백 동작
+    const unmatchedLnNotesByChannel = new Map<number, BmsNote[]>();
+    for (const note of bmsData.notes) {
+      if (visited.has(note.id)) continue;
+      if ((note.channel >= 0x51 && note.channel <= 0x59) || (note.channel >= 0x61 && note.channel <= 0x69)) {
+        if (!unmatchedLnNotesByChannel.has(note.channel)) unmatchedLnNotesByChannel.set(note.channel, []);
+        unmatchedLnNotesByChannel.get(note.channel)!.push(note);
+      }
+    }
+
+    unmatchedLnNotesByChannel.forEach(notes => {
       notes.sort((a, b) => (a.measure + a.position) - (b.measure + b.position));
       for (let i = 0; i < notes.length - 1; i += 2) {
-        pairs.push({ start: notes[i], end: notes[i+1] });
+        const start = notes[i];
+        const end = notes[i+1];
+        start.partnerId = end.id;
+        end.partnerId = start.id;
+        pairs.push({ start, end });
+        visited.add(start.id);
+        visited.add(end.id);
       }
     });
 
-    // 2. LNOBJ
+    // 3. LNOBJ에 대한 폴백
     const lnObjStr = bmsData.header.lnobj;
     if (lnObjStr) {
       const lnObjVal = decodeBmsValue(lnObjStr, useBase62);
       if (lnObjVal > 0) {
         const playableNotesByChannel = new Map<number, BmsNote[]>();
         for (const note of bmsData.notes) {
+          if (visited.has(note.id)) continue;
           if ((note.channel >= 0x11 && note.channel <= 0x19) || (note.channel >= 0x21 && note.channel <= 0x29)) {
             if (!playableNotesByChannel.has(note.channel)) playableNotesByChannel.set(note.channel, []);
             playableNotesByChannel.get(note.channel)!.push(note);
           }
         }
-        
+
         playableNotesByChannel.forEach(notes => {
           notes.sort((a, b) => (a.measure + a.position) - (b.measure + b.position));
           for (let i = 1; i < notes.length; i++) {
             const n = notes[i];
-            if (n.value === lnObjVal) {
+            if (n.value === lnObjVal && !visited.has(n.id)) {
               const startNote = notes[i-1];
-              if (startNote.value !== lnObjVal) {
+              if (startNote.value !== lnObjVal && !visited.has(startNote.id)) {
+                startNote.partnerId = n.id;
+                n.partnerId = startNote.id;
                 pairs.push({ start: startNote, end: n });
+                visited.add(startNote.id);
+                visited.add(n.id);
               }
             }
           }
@@ -1742,8 +1774,11 @@ function App() {
 
   // 쓰기 모드에서의 롱노트 드래그 관련 Ref
   const isDrawingLongNote = useRef(false);
-  const writeStartBmsPos = useRef<{ measure: number; position: number; lane: any; channel: number; index: number } | null>(null);
-  const writeCurrentBmsPos = useRef<{ measure: number; position: number; lane: any; channel: number; index: number } | null>(null);
+  const writeStartBmsPos = useRef<{ measure: number; position: number; lane: any; channel: number; index: number; value?: number } | null>(null);
+  const writeCurrentBmsPos = useRef<{ measure: number; position: number; lane: any; channel: number; index: number; value?: number } | null>(null);
+  const isResizingLongNote = useRef(false);
+  const resizeTargetNoteId = useRef<string | null>(null);
+  const resizeOffsetAbs = useRef<number>(0);
   
   // To track offsets for dragging multiple notes
   const dragStartBmsPos = useRef<{ measure: number, position: number, channel: number, index: number } | null>(null);
@@ -1968,6 +2003,50 @@ function App() {
         return;
       }
 
+      if (isResizingLongNote.current && resizeTargetNoteId.current && bmsDataRef.current) {
+        const originY = canvas.height + scrollY.current;
+        const ctxY = y - originY;
+        const measureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
+        const absolutePosition = -ctxY / measureHeight;
+        
+        const targetAbsTime = absolutePosition - resizeOffsetAbs.current;
+        
+        let targetMeasure = 0;
+        while (targetMeasure < measureOffsets.offsets.length - 1 && measureOffsets.offsets[targetMeasure + 1] <= targetAbsTime) {
+          targetMeasure++;
+        }
+        const measureStart = measureOffsets.offsets[targetMeasure];
+        const measureLen = bmsDataRef.current.measureLengths?.[targetMeasure] ?? 1;
+        
+        let offsetVal = targetAbsTime - measureStart;
+        if (targetMeasure === 0 && offsetVal < 0) {
+          offsetVal = 0;
+        }
+        
+        const snap = gridSnapRef.current;
+        let snappedOffset = Math.round(offsetVal * snap) / snap;
+        let targetPos = 0;
+        
+        if (snappedOffset >= measureLen - 1e-9) {
+          targetMeasure += 1;
+          targetPos = 0;
+        } else {
+          const finalMeasureLen = bmsDataRef.current.measureLengths?.[targetMeasure] ?? 1;
+          targetPos = snappedOffset / finalMeasureLen;
+        }
+
+        const currentNote = bmsDataRef.current.notes.find(n => n.id === resizeTargetNoteId.current);
+        if (currentNote && (currentNote.measure !== targetMeasure || currentNote.position !== targetPos)) {
+          dragNoteDidMove.current = true;
+          updateNote(resizeTargetNoteId.current, {
+            measure: targetMeasure,
+            position: targetPos
+          });
+          requestRender();
+        }
+        return;
+      }
+
       if (isSelectingBox.current && selectionBoxStart.current) {
         const currentOriginY = canvas.height + scrollY.current;
         selectionBoxCurrent.current = {
@@ -2153,6 +2232,16 @@ function App() {
         return;
       }
 
+      if (isResizingLongNote.current) {
+        isResizingLongNote.current = false;
+        resizeTargetNoteId.current = null;
+        if (dragNoteDidMove.current) {
+          commitHistory();
+        }
+        requestRender();
+        return;
+      }
+
       isDraggingV.current = false;
       isDraggingH.current = false;
 
@@ -2226,10 +2315,11 @@ function App() {
           const isPlayable = (actualChannel >= 0x11 && actualChannel <= 0x19) || 
                              (actualChannel >= 0x21 && actualChannel <= 0x29);
 
+          const baseValue = start.value !== undefined ? start.value : currentNoteValueRef.current;
           let startChannel = actualChannel;
           let endChannel = actualChannel;
-          let startValue = currentNoteValueRef.current;
-          let endValue = currentNoteValueRef.current;
+          let startValue = baseValue;
+          let endValue = baseValue;
 
           if (isPlayable) {
             const lnObjStr = bmsDataRef.current.header.lnobj;
@@ -2238,14 +2328,14 @@ function App() {
               // LNOBJ 방식
               startChannel = actualChannel;
               endChannel = actualChannel;
-              startValue = currentNoteValueRef.current;
+              startValue = baseValue;
               endValue = lnObjVal;
             } else {
               // 전통적 LN 채널 방식
               startChannel = actualChannel + 0x40;
               endChannel = actualChannel + 0x40;
-              startValue = currentNoteValueRef.current;
-              endValue = currentNoteValueRef.current;
+              startValue = baseValue;
+              endValue = baseValue;
             }
           }
 
@@ -2297,22 +2387,27 @@ function App() {
             updateNotes(overlappingUpdates);
           }
 
+          const startId = crypto.randomUUID();
+          const endId = crypto.randomUUID();
+
           addNotes([
             {
-              id: crypto.randomUUID(),
+              id: startId,
               measure: lowerNote.measure,
               position: lowerNote.position,
               channel: startChannel,
               index: actualIndex,
-              value: startValue
+              value: startValue,
+              partnerId: endId
             },
             {
-              id: crypto.randomUUID(),
+              id: endId,
               measure: upperNote.measure,
               position: upperNote.position,
               channel: endChannel,
               index: actualIndex,
-              value: endValue
+              value: endValue,
+              partnerId: startId
             }
           ]);
           commitHistory();
@@ -2571,7 +2666,7 @@ function App() {
 
     // Pixel-perfect node finder matching the exact screen box bounds of drawn notes.
     // This solves grid-snapping discrepancy where snap position differs from actual note position.
-    const findNoteAtPixel = (mouseX: number, mouseY: number) => {
+    const findNoteAtPixel = (mouseX: number, mouseY: number): { note: BmsNote; isBody?: boolean } | undefined => {
       if (!bmsDataRef.current) return undefined;
       const currentMeasureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
       const currentMeasureOffsets = measureOffsetsRef.current;
@@ -2605,7 +2700,7 @@ function App() {
         const noteY = yVal - noteHeight;
 
         if (worldY >= noteY && worldY <= noteY + noteHeight) {
-          return note;
+          return { note };
         }
       }
 
@@ -2643,7 +2738,7 @@ function App() {
 
         // worldY가 롱노트 몸통 범위 내에 있는지 검사
         if (worldY >= yTop - noteHeight && worldY <= yBottom) {
-          return start; // 시작 노트를 반환하여 세트로 선택되게 함
+          return { note: end, isBody: true }; // 끝 노트를 반환하여 끝부분(위)이 조절되게 함
         }
       }
 
@@ -2688,6 +2783,37 @@ function App() {
     };
 
     if (activeToolRef.current === 'write') {
+      const found = findNoteAtPixel(x, y);
+      const clickedNote = found?.note;
+      if (clickedNote && clickedNote.partnerId) {
+        isResizingLongNote.current = true;
+        resizeTargetNoteId.current = clickedNote.id;
+        dragNoteDidMove.current = false;
+        
+        const measureStart = measureOffsetsRef.current.offsets[measure];
+        const measureLen = bmsDataRef.current!.measureLengths[measure] ?? 1;
+        dragStartAbsPos.current = measureStart + position * measureLen;
+        dragStartBmsPos.current = { measure, position, channel: actualChannel, index: actualIndex };
+        
+        if (found.isBody) {
+          // 몸통을 누른 경우, 윗부분(clickedNote)을 즉시 클릭한 위치의 격자로 이동시킴!
+          updateNote(clickedNote.id, {
+            measure: measure,
+            position: position
+          });
+          resizeOffsetAbs.current = 0;
+          dragNoteDidMove.current = true;
+        } else {
+          const targetMeasureStart = measureOffsetsRef.current.offsets[clickedNote.measure];
+          const targetMeasureLen = bmsDataRef.current!.measureLengths[clickedNote.measure] ?? 1;
+          const targetAbsTime = targetMeasureStart + clickedNote.position * targetMeasureLen;
+          resizeOffsetAbs.current = dragStartAbsPos.current - targetAbsTime;
+        }
+        
+        requestRender();
+        return;
+      }
+
       if (actualChannel !== undefined) {
         const existingNote = findNoteAt();
         const canWriteOnExisting = existingNote && (
@@ -2704,7 +2830,8 @@ function App() {
               position, 
               lane, 
               channel: actualChannel, 
-              index: actualIndex 
+              index: actualIndex,
+              value: existingNote ? existingNote.value : undefined
             };
             isDrawingLongNote.current = true;
             writeStartBmsPos.current = startPos;
@@ -2734,13 +2861,15 @@ function App() {
         }
       }
     } else if (activeToolRef.current === 'erase') {
-      const clickedNote = findNoteAtPixel(x, y);
+      const found = findNoteAtPixel(x, y);
+      const clickedNote = found?.note;
       if (clickedNote) {
         removeNote(clickedNote.id);
         commitHistory();
       }
     } else if (activeToolRef.current === 'select') {
-      const clickedNote = findNoteAtPixel(x, y);
+      const found = findNoteAtPixel(x, y);
+      const clickedNote = found?.note;
       if (clickedNote) {
         const isAudioChannel = 
           clickedNote.channel === 0x01 || 

@@ -34,6 +34,7 @@ export interface BmsNote {
   index: number;    // The nth occurrence of this channel in this measure
   position: number; // 0.0 to 1.0 (relative position within the measure)
   value: number;    // The decoded integer value of the note
+  partnerId?: string; // Long note partner node ID (for preventing pairing drift)
 }
 
 export interface BmsData {
@@ -322,6 +323,53 @@ export function parseBms(bmsContent: string, baseMode: 16 | 36 | 62 | boolean): 
   }
 
   bmsData.expansion = expansionLines.join("\n");
+
+  // 1. Channel 51-59, 61-69 (Traditional LN)
+  const lnNotesByChannel = new Map<number, BmsNote[]>();
+  for (const note of bmsData.notes) {
+    if ((note.channel >= 0x51 && note.channel <= 0x59) || (note.channel >= 0x61 && note.channel <= 0x69)) {
+      if (!lnNotesByChannel.has(note.channel)) lnNotesByChannel.set(note.channel, []);
+      lnNotesByChannel.get(note.channel)!.push(note);
+    }
+  }
+  
+  lnNotesByChannel.forEach(notes => {
+    notes.sort((a, b) => (a.measure + a.position) - (b.measure + b.position));
+    for (let i = 0; i < notes.length - 1; i += 2) {
+      notes[i].partnerId = notes[i+1].id;
+      notes[i+1].partnerId = notes[i].id;
+    }
+  });
+
+  // 2. LNOBJ
+  const lnObjStr = bmsData.header.lnobj;
+  if (lnObjStr) {
+    const lnObjVal = decodeBmsValue(lnObjStr, base);
+    if (lnObjVal > 0) {
+      const playableNotesByChannel = new Map<number, BmsNote[]>();
+      for (const note of bmsData.notes) {
+        if ((note.channel >= 0x11 && note.channel <= 0x19) || (note.channel >= 0x21 && note.channel <= 0x29)) {
+          if (!playableNotesByChannel.has(note.channel)) playableNotesByChannel.set(note.channel, []);
+          playableNotesByChannel.get(note.channel)!.push(note);
+        }
+      }
+      
+      playableNotesByChannel.forEach(notes => {
+        notes.sort((a, b) => (a.measure + a.position) - (b.measure + b.position));
+        for (let i = 1; i < notes.length; i++) {
+          const n = notes[i];
+          if (n.value === lnObjVal) {
+            const startNote = notes[i-1];
+            if (startNote.value !== lnObjVal) {
+              startNote.partnerId = n.id;
+              n.partnerId = startNote.id;
+            }
+          }
+        }
+      });
+    }
+  }
+
   return bmsData;
 }
 

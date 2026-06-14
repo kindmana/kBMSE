@@ -55,7 +55,8 @@ export function getNotesAfterRemoval(notes: BmsNote[], idsToRemove: string[]): B
         if (n.id === pair.start.id) {
           return {
             ...n,
-            channel: n.channel - 0x40
+            channel: n.channel - 0x40,
+            partnerId: undefined
           };
         }
         return n;

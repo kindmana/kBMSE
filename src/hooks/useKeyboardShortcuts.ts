@@ -94,11 +94,28 @@ export function useKeyboardShortcuts(
     
     const offsetMeasure = targetMeasure - minMeasure;
     
-    const newNotes = clipboard.map(n => ({
-      ...n,
-      id: crypto.randomUUID(),
-      measure: Math.max(0, n.measure + offsetMeasure)
-    }));
+    // 1. 구 ID ➔ 신 ID 매핑 생성
+    const idMap = new Map<string, string>();
+    clipboard.forEach(n => {
+      idMap.set(n.id, crypto.randomUUID());
+    });
+
+    // 2. 새로운 노트 생성 (partnerId도 신규 ID로 재매핑)
+    const newNotes = clipboard.map(n => {
+      const newId = idMap.get(n.id)!;
+      let newPartnerId = undefined;
+      if (n.partnerId) {
+        if (idMap.has(n.partnerId)) {
+          newPartnerId = idMap.get(n.partnerId);
+        }
+      }
+      return {
+        ...n,
+        id: newId,
+        partnerId: newPartnerId,
+        measure: Math.max(0, n.measure + offsetMeasure)
+      };
+    });
     
     state.addNotes(newNotes);
     state.setSelectedNotes(newNotes.map(n => n.id));

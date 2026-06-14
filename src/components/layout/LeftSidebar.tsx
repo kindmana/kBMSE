@@ -406,7 +406,7 @@ export const LeftSidebar = ({
             }}
           >
             <Scale size={14} style={{ color: 'var(--accent-color)' }} />
-            <span style={{ whiteSpace: 'nowrap' }}>{lang === 'ko' ? '엇갈림 검사 (BMS Diff)' : 'Misalignment Diff'}</span>
+            <span style={{ whiteSpace: 'nowrap' }}>{lang === 'ko' ? '엇갈림 검사' : 'Misalignment Diff'}</span>
           </button>
         </div>
       )}
