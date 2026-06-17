@@ -83,9 +83,20 @@ const getArrayLcm = (arr: number[]): number => {
   return result;
 };
 
-const formatFraction = (pos: number, lcmVal: number): string => {
-  const numerator = Math.round(pos * lcmVal);
-  return `${numerator}/${lcmVal}`;
+const formatFraction = (pos: number, measureLen: number, lcmVal: number): string => {
+  const defaultDenom = Math.round(measureLen * 16);
+  const valAtDefault = pos * defaultDenom;
+  
+  if (Math.abs(valAtDefault - Math.round(valAtDefault)) < 1e-5) {
+    const numerator = Math.round(valAtDefault);
+    return `${numerator}/${defaultDenom}`;
+  } else {
+    const rawNumerator = Math.round(pos * lcmVal);
+    const g = gcd(rawNumerator, lcmVal);
+    const reducedNumerator = rawNumerator / g;
+    const reducedDenominator = lcmVal / g;
+    return `${reducedNumerator}/${reducedDenominator}`;
+  }
 };
 
 const resolveBaseBmsMode = (mode: 'auto' | '16' | '36' | '62', filename: string): 16 | 36 | 62 => {
@@ -312,14 +323,16 @@ const runMisalignmentCheck = (
       }
       
       const lcmVal = measureLcm[bItem.note.measure] ?? 4;
-      const baseFraction = formatFraction(bItem.note.position, lcmVal);
+      const baseMeasureLen = baseBms.measureLengths[bItem.note.measure] !== undefined ? baseBms.measureLengths[bItem.note.measure] : 1.0;
+      const baseFraction = formatFraction(bItem.note.position, baseMeasureLen, lcmVal);
 
       // Compare by physical time difference (threshold of 2.0 seconds)
       if (bestMatchIdx !== -1 && minTimeDiff <= 2.0) {
         matchedBaseIndexes.add(bIdx);
         matchedCurrentIndexes.add(bestMatchIdx);
         const cItem = currentList[bestMatchIdx];
-        const diffFraction = formatFraction(cItem.note.position, lcmVal);
+        const diffMeasureLen = currentBms.measureLengths[cItem.note.measure] !== undefined ? currentBms.measureLengths[cItem.note.measure] : 1.0;
+        const diffFraction = formatFraction(cItem.note.position, diffMeasureLen, lcmVal);
         
         diffItems.push({
           id: crypto.randomUUID(),
@@ -345,20 +358,25 @@ const runMisalignmentCheck = (
           timeDifference: cItem.time - bItem.time
         });
       } else {
-        diffItems.push({
-          id: crypto.randomUUID(),
-          measure: bItem.note.measure,
-          beat: bItem.beat,
-          time: bItem.time,
-          status: 'only_base',
-          baseNote: {
-            channel: bItem.note.channel,
-            value: bItem.note.value,
-            wavName: bItem.wavName,
-            position: bItem.note.position,
-            fractionStr: baseFraction
-          }
-        });
+        // 양쪽 파일 모두에 이 키음이 존재하는 경우라면 개수 불일치로 인한 only_base는 제외
+        if (baseList.length > 0 && currentList.length > 0) {
+          // 제외
+        } else {
+          diffItems.push({
+            id: crypto.randomUUID(),
+            measure: bItem.note.measure,
+            beat: bItem.beat,
+            time: bItem.time,
+            status: 'only_base',
+            baseNote: {
+              channel: bItem.note.channel,
+              value: bItem.note.value,
+              wavName: bItem.wavName,
+              position: bItem.note.position,
+              fractionStr: baseFraction
+            }
+          });
+        }
       }
     }
     
@@ -366,8 +384,15 @@ const runMisalignmentCheck = (
     for (let cIdx = 0; cIdx < currentList.length; cIdx++) {
       if (matchedCurrentIndexes.has(cIdx)) continue;
       const cItem = currentList[cIdx];
+      
+      // 양쪽 파일 모두에 이 키음이 존재하는 경우라면 개수 불일치로 인한 only_diff는 제외
+      if (baseList.length > 0 && currentList.length > 0) {
+        continue;
+      }
+      
       const lcmVal = measureLcm[cItem.note.measure] ?? 4;
-      const diffFraction = formatFraction(cItem.note.position, lcmVal);
+      const diffMeasureLen = currentBms.measureLengths[cItem.note.measure] !== undefined ? currentBms.measureLengths[cItem.note.measure] : 1.0;
+      const diffFraction = formatFraction(cItem.note.position, diffMeasureLen, lcmVal);
 
       diffItems.push({
         id: crypto.randomUUID(),
@@ -775,7 +800,7 @@ export const BmsDiffModal = ({
                     boxShadow: filterType === 'misaligned' ? 'inset 0 0 0 1px var(--accent-color)' : 'none'
                   }}
                 >
-                  <div style={{ fontSize: '0.75rem', color: '#eab308', marginBottom: '4px' }}>{t("엇갈린 키음 (Zore/Shift)", "Misaligned Notes")}</div>
+                  <div style={{ fontSize: '0.75rem', color: '#eab308', marginBottom: '4px' }}>{t("엇갈린 키음", "Misaligned Notes")}</div>
                   <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#eab308' }}>
                     {misalignedCount}
                   </div>
@@ -793,7 +818,7 @@ export const BmsDiffModal = ({
                     boxShadow: filterType === 'only_base' ? 'inset 0 0 0 1px #ef4444' : 'none'
                   }}
                 >
-                  <div style={{ fontSize: '0.75rem', color: '#ef4444', marginBottom: '4px' }}>{t("Base에만 존재 (누락)", "Missing in Diff")}</div>
+                  <div style={{ fontSize: '0.75rem', color: '#ef4444', marginBottom: '4px' }}>{t("원본에만 존재 (누락)", "Missing in Diff")}</div>
                   <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#ef4444' }}>
                     {onlyBaseCount}
                   </div>
@@ -840,7 +865,7 @@ export const BmsDiffModal = ({
                     className={`tool-button ${filterType === 'only_base' ? 'active' : ''}`}
                     style={{ padding: '4px 10px', fontSize: '0.75rem' }}
                   >
-                    {t("Base에만 있음", "Only in Base")} ({onlyBaseCount})
+                    {t("원본에만 있음", "Only in Base")} ({onlyBaseCount})
                   </button>
                   <button 
                     onClick={() => setFilterType('only_diff')}
