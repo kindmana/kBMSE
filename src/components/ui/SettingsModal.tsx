@@ -724,6 +724,35 @@ export const SettingsModal = ({ isOpen, onClose, initialTab }: SettingsModalProp
                   />
                 </div>
 
+                {/* LN Write Mode when LNOBJ is defined */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+                      {t("LNOBJ 사용 시 롱노트 입력 방식", "LN Write Mode with LNOBJ", "LNOBJ使用時のロングノーツ入力方式")}
+                    </span>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                      {t("LNOBJ가 헤더에 지정되어 있을 때, 롱노트를 그릴 방식을 선택합니다.", "Select the LN method to write when LNOBJ is defined in the header.", "LNOBJがヘッダーに指定されている時、ロングノーツを入力する方式を選択します。")}
+                    </span>
+                  </div>
+                  <select
+                    value={settings.lnWriteMode}
+                    onChange={(e) => handleSelect('lnWriteMode', e.target.value)}
+                    style={{
+                      background: 'var(--bg-secondary)',
+                      color: 'var(--text-primary)',
+                      border: '1px solid rgba(255,255,255,0.15)',
+                      padding: '4px 8px',
+                      borderRadius: '4px',
+                      fontSize: '0.8rem',
+                      outline: 'none',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <option value="lnobj">{t("LNOBJ 방식", "LNOBJ Mode", "LNOBJ方式")}</option>
+                    <option value="channel">{t("채널 방식", "Channel Mode", "チャンネル (Channel) 方式")}</option>
+                  </select>
+                </div>
+
                 {/* Volume slider */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

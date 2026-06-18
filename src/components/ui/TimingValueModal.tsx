@@ -7,13 +7,15 @@ interface TimingValueModalProps {
   onClose: () => void;
   channel: number;
   onApply: (value: number) => void;
+  defaultValue?: number;
 }
 
 export const TimingValueModal: React.FC<TimingValueModalProps> = ({
   isOpen,
   onClose,
   channel,
-  onApply
+  onApply,
+  defaultValue
 }) => {
   const { settings } = useEditorStore();
   const lang = settings.language || 'en';
@@ -24,13 +26,13 @@ export const TimingValueModal: React.FC<TimingValueModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      setInputStr('');
+      setInputStr(defaultValue !== undefined ? defaultValue.toString() : '');
       setError('');
       setTimeout(() => {
         if (inputRef.current) inputRef.current.focus();
       }, 50);
     }
-  }, [isOpen]);
+  }, [isOpen, defaultValue]);
 
   if (!isOpen) return null;
 

@@ -358,8 +358,12 @@ const runMisalignmentCheck = (
           timeDifference: cItem.time - bItem.time
         });
       } else {
-        // 양쪽 파일 모두에 이 키음이 존재하는 경우라면 개수 불일치로 인한 only_base는 제외
-        if (baseList.length > 0 && currentList.length > 0) {
+        // 동일 타이밍(같은 시간)에 겹쳐 있던 동일 키음인지 확인
+        const hasSameTimeMatchedBase = Array.from(matchedBaseIndexes).some(mIdx => 
+          Math.abs(baseList[mIdx].time - bItem.time) <= 0.001
+        );
+        
+        if (hasSameTimeMatchedBase) {
           // 제외
         } else {
           diffItems.push({
@@ -385,8 +389,12 @@ const runMisalignmentCheck = (
       if (matchedCurrentIndexes.has(cIdx)) continue;
       const cItem = currentList[cIdx];
       
-      // 양쪽 파일 모두에 이 키음이 존재하는 경우라면 개수 불일치로 인한 only_diff는 제외
-      if (baseList.length > 0 && currentList.length > 0) {
+      // 동일 타이밍(같은 시간)에 겹쳐 있던 동일 키음인지 확인
+      const hasSameTimeMatchedCurrent = Array.from(matchedCurrentIndexes).some(mIdx => 
+        Math.abs(currentList[mIdx].time - cItem.time) <= 0.001
+      );
+      
+      if (hasSameTimeMatchedCurrent) {
         continue;
       }
       

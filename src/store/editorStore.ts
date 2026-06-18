@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { BmsData, BmsNote } from '../parser/bmsParser';
+import { BmsData, BmsNote, decodeBmsValue } from '../parser/bmsParser';
 import { stopAllSounds, getAudioContext } from '../utils/audioPlayer';
 import { KeyMode, HIDDEN_LANES } from '../constants/layout';
 
@@ -16,24 +16,57 @@ export interface HistoryEntry {
   bmps?: Record<number, string>;
 }
 
-export function getNotesAfterRemoval(notes: BmsNote[], idsToRemove: string[]): BmsNote[] {
-  const lnChannels = [
-    0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,
-    0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69
-  ];
+export function getNotesAfterRemoval(notes: BmsNote[], idsToRemove: string[], lnobjVal?: number): BmsNote[] {
   const pairs: { start: BmsNote; end: BmsNote }[] = [];
-  
-  lnChannels.forEach(ch => {
-    const chNotes = notes.filter(n => n.channel === ch).sort((a, b) => {
-      if (a.measure !== b.measure) return a.measure - b.measure;
-      return a.position - b.position;
-    });
-    for (let i = 0; i < chNotes.length; i += 2) {
-      if (i + 1 < chNotes.length) {
-        pairs.push({ start: chNotes[i], end: chNotes[i + 1] });
+  const processedIds = new Set<string>();
+
+  // 1. partnerId 관계를 통한 모든 롱노트 쌍 수집 (LNOBJ 및 채널 방식 통합 대응)
+  notes.forEach(note => {
+    if (note.partnerId && !processedIds.has(note.id)) {
+      const partner = notes.find(n => n.id === note.partnerId);
+      if (partner && !processedIds.has(partner.id)) {
+        processedIds.add(note.id);
+        processedIds.add(partner.id);
+        
+        const noteTime = note.measure + note.position;
+        const partnerTime = partner.measure + partner.position;
+        if (noteTime <= partnerTime) {
+          pairs.push({ start: note, end: partner });
+        } else {
+          pairs.push({ start: partner, end: note });
+        }
       }
     }
   });
+
+  // 2. LNOBJ 폴백을 통한 롱노트 쌍 수집 (스토어에 partnerId가 온전히 들어있지 않을 수 있으므로)
+  if (lnobjVal && lnobjVal > 0) {
+    const playableNotesByChannel = new Map<number, BmsNote[]>();
+    notes.forEach(note => {
+      if (processedIds.has(note.id)) return;
+      if ((note.channel >= 0x11 && note.channel <= 0x19) || (note.channel >= 0x21 && note.channel <= 0x29)) {
+        if (!playableNotesByChannel.has(note.channel)) {
+          playableNotesByChannel.set(note.channel, []);
+        }
+        playableNotesByChannel.get(note.channel)!.push(note);
+      }
+    });
+
+    playableNotesByChannel.forEach(chNotes => {
+      chNotes.sort((a, b) => (a.measure + a.position) - (b.measure + b.position));
+      for (let i = 1; i < chNotes.length; i++) {
+        const n = chNotes[i];
+        if (n.value === lnobjVal && !processedIds.has(n.id)) {
+          const startNote = chNotes[i-1];
+          if (startNote.value !== lnobjVal && !processedIds.has(startNote.id)) {
+            pairs.push({ start: startNote, end: n });
+            processedIds.add(startNote.id);
+            processedIds.add(n.id);
+          }
+        }
+      }
+    });
+  }
 
   let activeIdsToRemove = [...idsToRemove];
   let notesToUpdate = [...notes];
@@ -53,9 +86,10 @@ export function getNotesAfterRemoval(notes: BmsNote[], idsToRemove: string[]): B
       // 시작 부분 노드를 일반 노트 채널로 변환
       notesToUpdate = notesToUpdate.map(n => {
         if (n.id === pair.start.id) {
+          const isLnChannel = (n.channel >= 0x51 && n.channel <= 0x59) || (n.channel >= 0x61 && n.channel <= 0x69);
           return {
             ...n,
-            channel: n.channel - 0x40,
+            channel: isLnChannel ? n.channel - 0x40 : n.channel,
             partnerId: undefined
           };
         }
@@ -65,6 +99,87 @@ export function getNotesAfterRemoval(notes: BmsNote[], idsToRemove: string[]): B
   });
 
   return notesToUpdate.filter(n => !activeIdsToRemove.includes(n.id));
+}
+
+function fixLongNoteValuePairings(notes: BmsNote[], lnobjVal: number): BmsNote[] {
+  const processedIds = new Set<string>();
+  const pairs: { start: BmsNote; end: BmsNote }[] = [];
+  
+  // 1. partnerId 관계를 통한 모든 롱노트 쌍 수집
+  notes.forEach(note => {
+    if (note.partnerId && !processedIds.has(note.id)) {
+      const partner = notes.find(n => n.id === note.partnerId);
+      if (partner && !processedIds.has(partner.id)) {
+        processedIds.add(note.id);
+        processedIds.add(partner.id);
+        
+        const t1 = note.measure + note.position;
+        const t2 = partner.measure + partner.position;
+        if (t1 <= t2) {
+          pairs.push({ start: note, end: partner });
+        } else {
+          pairs.push({ start: partner, end: note });
+        }
+      }
+    }
+  });
+
+  // 2. LNOBJ 폴백을 통한 롱노트 쌍 수집
+  if (lnobjVal > 0) {
+    const playableNotesByChannel = new Map<number, BmsNote[]>();
+    notes.forEach(note => {
+      if (processedIds.has(note.id)) return;
+      if ((note.channel >= 0x11 && note.channel <= 0x19) || (note.channel >= 0x21 && note.channel <= 0x29)) {
+        if (!playableNotesByChannel.has(note.channel)) {
+          playableNotesByChannel.set(note.channel, []);
+        }
+        playableNotesByChannel.get(note.channel)!.push(note);
+      }
+    });
+
+    playableNotesByChannel.forEach(chNotes => {
+      chNotes.sort((a, b) => (a.measure + a.position) - (b.measure + b.position));
+      for (let i = 1; i < chNotes.length; i++) {
+        const n = chNotes[i];
+        if (n.value === lnobjVal && !processedIds.has(n.id)) {
+          const startNote = chNotes[i-1];
+          if (startNote.value !== lnobjVal && !processedIds.has(startNote.id)) {
+            pairs.push({ start: startNote, end: n });
+            processedIds.add(startNote.id);
+            processedIds.add(n.id);
+          }
+        }
+      }
+    });
+  }
+
+  let updatedNotes = [...notes];
+  
+  pairs.forEach(pair => {
+    if (lnobjVal > 0) {
+      const currentStart = updatedNotes.find(n => n.id === pair.start.id);
+      const currentEnd = updatedNotes.find(n => n.id === pair.end.id);
+      
+      if (currentStart && currentEnd) {
+        const isLnobjStart = currentStart.value === lnobjVal;
+        const isLnobjEnd = currentEnd.value === lnobjVal;
+        
+        if (isLnobjStart && !isLnobjEnd) {
+          updatedNotes = updatedNotes.map(n => {
+            if (n.id === pair.start.id) {
+              return { ...n, value: currentEnd.value };
+            }
+            if (n.id === pair.end.id) {
+              return { ...n, value: lnobjVal };
+            }
+            return n;
+          });
+        }
+      }
+    }
+  });
+
+  return updatedNotes;
 }
 
 export function detectBase62Needed(bmsContent: string): boolean {
@@ -119,6 +234,7 @@ export interface EditorSettings {
   scrollDirection: 'normal' | 'reverse';
   base62Mode: 'auto' | '16' | '36' | '62';
   volume: number; // 0 to 100
+  lnWriteMode: 'lnobj' | 'channel';
 
   // Visual Options
   theme: 'dark' | 'light' | 'cyberpunk' | 'sunset' | 'ocean' | 'sakura' | 'forest' | 'nebula' | 'midnight' | 'peach' | 'lavender' | 'mint' | 'crimson';
@@ -181,6 +297,7 @@ const DEFAULT_SETTINGS: EditorSettings = {
   scrollDirection: 'normal',
   base62Mode: 'auto',
   volume: 80,
+  lnWriteMode: 'lnobj',
   
   theme: 'dark',
   noteSkin: 'flat',
@@ -206,6 +323,18 @@ const getInitialSettings = (): EditorSettings => {
     console.error("Failed to load settings from localStorage:", e);
   }
   return DEFAULT_SETTINGS;
+};
+
+const getInitialLockVerticalPosition = (): boolean => {
+  try {
+    const stored = localStorage.getItem('kBMSE_lock_vertical_position');
+    if (stored !== null) {
+      return JSON.parse(stored) === true;
+    }
+  } catch (e) {
+    console.error("Failed to load lockVerticalPosition from localStorage:", e);
+  }
+  return false;
 };
 
 const RIGHT_SIDEBAR_SETTINGS_LOCAL_STORAGE_KEY = 'kBMSE_right_sidebar_settings';
@@ -384,8 +513,15 @@ export const useEditorStore = create<EditorState>((set) => ({
   useBase62: 62, // Default to base 62
   setUseBase62: (val) => set({ useBase62: val }),
   
-  lockVerticalPosition: false,
-  setLockVerticalPosition: (val) => set({ lockVerticalPosition: val }),
+  lockVerticalPosition: getInitialLockVerticalPosition(),
+  setLockVerticalPosition: (val) => set(() => {
+    try {
+      localStorage.setItem('kBMSE_lock_vertical_position', JSON.stringify(val));
+    } catch (e) {
+      console.error("Failed to save lockVerticalPosition to localStorage:", e);
+    }
+    return { lockVerticalPosition: val };
+  }),
   
   activeTool: 'select',
   setActiveTool: (tool) => set({ activeTool: tool }),
@@ -690,30 +826,44 @@ export const useEditorStore = create<EditorState>((set) => ({
 
   removeNote: (id) => set((state) => {
     if (!state.bmsData) return state;
+    const lnObjStr = state.bmsData.header.lnobj;
+    const lnObjVal = lnObjStr ? decodeBmsValue(lnObjStr, state.useBase62) : 0;
     return {
       bmsData: {
         ...state.bmsData,
-        notes: getNotesAfterRemoval(state.bmsData.notes, [id])
+        notes: getNotesAfterRemoval(state.bmsData.notes, [id], lnObjVal)
       }
     };
   }),
 
   removeNotes: (ids) => set((state) => {
     if (!state.bmsData) return state;
+    const lnObjStr = state.bmsData.header.lnobj;
+    const lnObjVal = lnObjStr ? decodeBmsValue(lnObjStr, state.useBase62) : 0;
     return {
       bmsData: {
         ...state.bmsData,
-        notes: getNotesAfterRemoval(state.bmsData.notes, ids)
+        notes: getNotesAfterRemoval(state.bmsData.notes, ids, lnObjVal)
       }
     };
   }),
 
   updateNote: (id, updates) => set((state) => {
     if (!state.bmsData) return state;
+    let updatedNotes = state.bmsData.notes.map(n => n.id === id ? { ...n, ...updates } : n);
+    
+    const lnObjStr = state.bmsData.header.lnobj;
+    if (lnObjStr) {
+      const lnObjVal = decodeBmsValue(lnObjStr, state.useBase62);
+      if (lnObjVal > 0) {
+        updatedNotes = fixLongNoteValuePairings(updatedNotes, lnObjVal);
+      }
+    }
+    
     return {
       bmsData: {
         ...state.bmsData,
-        notes: state.bmsData.notes.map(n => n.id === id ? { ...n, ...updates } : n)
+        notes: updatedNotes
       }
     };
   }),
@@ -721,13 +871,23 @@ export const useEditorStore = create<EditorState>((set) => ({
   updateNotes: (updatesArray) => set((state) => {
     if (!state.bmsData) return state;
     const updateMap = new Map(updatesArray.map(u => [u.id, u.updates]));
+    let updatedNotes = state.bmsData.notes.map(n => {
+      const updates = updateMap.get(n.id);
+      return updates ? { ...n, ...updates } : n;
+    });
+    
+    const lnObjStr = state.bmsData.header.lnobj;
+    if (lnObjStr) {
+      const lnObjVal = decodeBmsValue(lnObjStr, state.useBase62);
+      if (lnObjVal > 0) {
+        updatedNotes = fixLongNoteValuePairings(updatedNotes, lnObjVal);
+      }
+    }
+    
     return {
       bmsData: {
         ...state.bmsData,
-        notes: state.bmsData.notes.map(n => {
-          const updates = updateMap.get(n.id);
-          return updates ? { ...n, ...updates } : n;
-        })
+        notes: updatedNotes
       }
     };
   }),

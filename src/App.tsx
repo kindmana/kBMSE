@@ -113,7 +113,8 @@ function App() {
   const [isValidationErrorOpen, setIsValidationErrorOpen] = useState(false);
   const [isTimingValueModalOpen, setIsTimingValueModalOpen] = useState(false);
   const [timingModalChannel, setTimingModalChannel] = useState(0);
-  const timingModalClickInfo = useRef<{ measure: number; position: number; actualChannel: number; actualIndex: number } | null>(null);
+  const [timingModalDefaultValue, setTimingModalDefaultValue] = useState<number | undefined>(undefined);
+  const timingModalClickInfo = useRef<{ measure: number; position: number; actualChannel: number; actualIndex: number; editingNoteId?: string } | null>(null);
   const [bmsFilesToSelect, setBmsFilesToSelect] = useState<File[]>([]);
   const [isBmsSelectionOpen, setIsBmsSelectionOpen] = useState(false);
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
@@ -2297,6 +2298,18 @@ function App() {
             }
           }
 
+          // 이미 같은 위치(measure, position, targetChannel)에 노트가 존재하는지 검사하여 중복 쓰기 방지
+          const targetNorm = normalizeChannel(targetChannel);
+          const hasExisting = bmsDataRef.current.notes.some(n => 
+            n.measure === start.measure && 
+            normalizeChannel(n.channel) === targetNorm && 
+            (n.channel !== 0x01 || n.index === actualIndex) &&
+            Math.abs(n.position - start.position) < 1e-5
+          );
+          if (hasExisting) {
+            return;
+          }
+
           addNote({
             id: crypto.randomUUID(),
             measure: start.measure,
@@ -2324,7 +2337,7 @@ function App() {
           if (isPlayable) {
             const lnObjStr = bmsDataRef.current.header.lnobj;
             const lnObjVal = lnObjStr ? decodeBmsValue(lnObjStr, useBase62Ref.current) : 0;
-            if (lnObjVal > 0) {
+            if (lnObjVal > 0 && settingsRef.current.lnWriteMode !== 'channel') {
               // LNOBJ 방식
               startChannel = actualChannel;
               endChannel = actualChannel;
@@ -2816,6 +2829,37 @@ function App() {
 
       if (actualChannel !== undefined) {
         const existingNote = findNoteAt();
+        const isTimingChannel = actualChannel === 0x08 || actualChannel === 0x09 || actualChannel === 256;
+
+        if (isTimingChannel) {
+          if (existingNote) {
+            // 이미 타이밍 노정이 있는 경우 ➔ 수정 모달 노출
+            let existingVal = 0;
+            if (actualChannel === 0x08) existingVal = bmsDataRef.current?.bpms?.[existingNote.value] ?? 120;
+            else if (actualChannel === 0x09) existingVal = bmsDataRef.current?.stops?.[existingNote.value] ?? 0;
+            else if (actualChannel === 256) existingVal = bmsDataRef.current?.scrolls?.[existingNote.value] ?? 1;
+
+            timingModalClickInfo.current = { 
+              measure, 
+              position, 
+              actualChannel, 
+              actualIndex, 
+              editingNoteId: existingNote.id 
+            };
+            setTimingModalChannel(actualChannel);
+            setTimingModalDefaultValue(existingVal);
+            setIsTimingValueModalOpen(true);
+            return;
+          } else {
+            // 신규 타이밍 노정 생성 모달 노출
+            timingModalClickInfo.current = { measure, position, actualChannel, actualIndex };
+            setTimingModalChannel(actualChannel);
+            setTimingModalDefaultValue(undefined);
+            setIsTimingValueModalOpen(true);
+            return;
+          }
+        }
+
         const canWriteOnExisting = existingNote && (
           (existingNote.channel >= 0x11 && existingNote.channel <= 0x19) ||
           (existingNote.channel >= 0x21 && existingNote.channel <= 0x29)
@@ -2838,15 +2882,6 @@ function App() {
             writeCurrentBmsPos.current = startPos;
             requestRender();
           } else if (!existingNote) {
-            // 실수 타이밍 수치 동적 입력창 기믹 (BPM, STOP, SCROLL 영역 대응)
-            const isTimingChannel = actualChannel === 0x08 || actualChannel === 0x09 || actualChannel === 256;
-            if (isTimingChannel) {
-              timingModalClickInfo.current = { measure, position, actualChannel, actualIndex };
-              setTimingModalChannel(actualChannel);
-              setIsTimingValueModalOpen(true);
-              return;
-            }
-
             addNote({
               id: crypto.randomUUID(),
               measure,
@@ -2959,7 +2994,7 @@ function App() {
   const handleApplyTimingValue = (parsedVal: number) => {
     const info = timingModalClickInfo.current;
     if (!info) return;
-    const { measure, position, actualChannel, actualIndex } = info;
+    const { measure, position, actualChannel, actualIndex, editingNoteId } = info;
     const currentBmsData = bmsDataRef.current;
     if (!currentBmsData) return;
     
@@ -2995,14 +3030,22 @@ function App() {
       targetIdx = nextIdx;
     }
     
-    addNote({
-      id: crypto.randomUUID(),
-      measure,
-      position,
-      channel: actualChannel,
-      index: actualIndex,
-      value: targetIdx
-    });
+    if (editingNoteId) {
+      // 수정 모드: 기존 노정을 업데이트
+      updateNote(editingNoteId, {
+        value: targetIdx
+      });
+    } else {
+      // 생성 모드: 새 노정을 생성
+      addNote({
+        id: crypto.randomUUID(),
+        measure,
+        position,
+        channel: actualChannel,
+        index: actualIndex,
+        value: targetIdx
+      });
+    }
     commitHistory();
     requestRender();
   };
@@ -3223,6 +3266,7 @@ function App() {
     onClose={() => setIsTimingValueModalOpen(false)}
     channel={timingModalChannel}
     onApply={handleApplyTimingValue}
+    defaultValue={timingModalDefaultValue}
   />
 )}
 
