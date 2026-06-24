@@ -192,20 +192,54 @@ export const RightSidebar = ({
 
   const [expansionText, setExpansionText] = useState('');
   const isExpansionFocused = useRef(false);
+  const hiddenExpansionLines = useRef<string[]>([]);
 
   useEffect(() => {
     if (bmsData && !isExpansionFocused.current) {
-      setExpansionText(bmsData.expansion || '');
+      const fullText = bmsData.expansion || '';
+      const lines = fullText.split(/\r?\n/);
+      const visibleLines: string[] = [];
+      const hiddenLines: string[] = [];
+      const defRegex = /^#(WAV|BMP)([0-9A-Z]{2})\s+(.+)$/i;
+
+      for (const line of lines) {
+        if (defRegex.test(line.trim())) {
+          hiddenLines.push(line);
+        } else {
+          visibleLines.push(line);
+        }
+      }
+      setExpansionText(visibleLines.join('\n'));
+      hiddenExpansionLines.current = hiddenLines;
     } else if (!bmsData) {
       setExpansionText('');
+      hiddenExpansionLines.current = [];
     }
   }, [bmsData?.expansion]);
 
   const handleExpansionCodeChange = (text: string) => {
     if (!bmsData) return;
 
+    // Restore hidden BMP/WAV definitions
+    const userLines = text.split(/\r?\n/);
+    const userDefinedKeys = new Set<string>();
+    const defRegex = /^#(WAV|BMP)([0-9A-Z]{2})/i;
+    for (const line of userLines) {
+      const match = line.trim().match(defRegex);
+      if (match) {
+        userDefinedKeys.add(match[0].toUpperCase());
+      }
+    }
+
+    const hiddenToAppend = hiddenExpansionLines.current.filter(line => {
+      const match = line.trim().match(defRegex);
+      return match ? !userDefinedKeys.has(match[0].toUpperCase()) : true;
+    });
+
+    const combinedText = [...userLines, ...hiddenToAppend].join('\n');
+
     // 1. Update the expansion text in the store so it persists on save
-    updateExpansion(text);
+    updateExpansion(combinedText);
 
     // 2. Parse and append custom expansion tags to bmsData.header for editor reactivity
     const newHeader: Record<string, any> = {};
@@ -215,7 +249,7 @@ export const RightSidebar = ({
       }
     }
 
-    const lines = text.split('\n');
+    const lines = combinedText.split('\n');
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed.startsWith('#')) continue;

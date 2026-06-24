@@ -186,35 +186,51 @@ export function parseBms(bmsContent: string, baseMode: 16 | 36 | 62 | boolean): 
       if (trimmed.startsWith("#")) {
         expansionLines.push(trimmed);
         
-        // Also parse standard headers even within expansion field to sync with editor properties
-        const headerMatch = trimmed.match(headerRegex);
-        if (headerMatch) {
-          const key = headerMatch[1].toUpperCase();
-          const val = headerMatch[2];
+        // Check for definitions first (e.g., #BMPxx, #WAVxx) within expansion field
+        const defMatch = trimmed.match(defRegex);
+        if (defMatch) {
+          const type = defMatch[1].toUpperCase();
+          const idStr = defMatch[2];
+          const val = defMatch[3];
+          const isTimingType = type === "BPM" || type === "STOP" || type === "SCROLL";
+          const id = isTimingType ? decodeBmsValueWithBase(idStr, timingBase) : decodeBmsValue(idStr, base);
           
-          switch (key) {
-            case "TITLE": bmsData.header.title = val; break;
-            case "SUBTITLE": bmsData.header.subtitle = val; break;
-            case "ARTIST": bmsData.header.artist = val; break;
-            case "SUBARTIST": bmsData.header.subartist = val; break;
-            case "GENRE": bmsData.header.genre = val; break;
-            case "BPM": bmsData.header.bpm = parseFloat(val); break;
-            case "PLAYER": bmsData.header.player = parseInt(val, 10); break;
-            case "RANK": bmsData.header.rank = parseInt(val, 10); break;
-            case "PLAYLEVEL": bmsData.header.playLevel = val; break;
-            case "DIFFICULTY": bmsData.header.difficulty = parseInt(val, 10); break;
-            case "TOTAL": bmsData.header.total = parseFloat(val); break;
-            case "LNMODE": bmsData.header.lnmode = parseInt(val, 10); break;
-            case "LNOBJ": bmsData.header.lnobj = val; break;
-            case "DEFEXRANK": bmsData.header.defexrank = parseFloat(val); break;
-            case "COMMENT": bmsData.header.comment = val; break;
-            case "STAGEFILE": bmsData.header.stagefile = val; break;
-            case "BANNER": bmsData.header.banner = val; break;
-            case "BACKBMP": bmsData.header.backbmp = val; break;
-            case "WAV00": bmsData.header.wav00 = val; break;
-            case "BMP00": bmsData.header.bmp00 = val; break;
-            case "PREVIEW": bmsData.header.preview = val; break;
-            default: bmsData.header[key] = val; break;
+          if (type === "WAV") bmsData.wavs[id] = val;
+          else if (type === "BMP") bmsData.bmps[id] = val;
+          else if (type === "BPM") bmsData.bpms[id] = parseFloat(val);
+          else if (type === "STOP") bmsData.stops[id] = parseFloat(val);
+          else if (type === "SCROLL") bmsData.scrolls[id] = parseFloat(val);
+        } else {
+          // Also parse standard headers even within expansion field to sync with editor properties
+          const headerMatch = trimmed.match(headerRegex);
+          if (headerMatch) {
+            const key = headerMatch[1].toUpperCase();
+            const val = headerMatch[2];
+            
+            switch (key) {
+              case "TITLE": bmsData.header.title = val; break;
+              case "SUBTITLE": bmsData.header.subtitle = val; break;
+              case "ARTIST": bmsData.header.artist = val; break;
+              case "SUBARTIST": bmsData.header.subartist = val; break;
+              case "GENRE": bmsData.header.genre = val; break;
+              case "BPM": bmsData.header.bpm = parseFloat(val); break;
+              case "PLAYER": bmsData.header.player = parseInt(val, 10); break;
+              case "RANK": bmsData.header.rank = parseInt(val, 10); break;
+              case "PLAYLEVEL": bmsData.header.playLevel = val; break;
+              case "DIFFICULTY": bmsData.header.difficulty = parseInt(val, 10); break;
+              case "TOTAL": bmsData.header.total = parseFloat(val); break;
+              case "LNMODE": bmsData.header.lnmode = parseInt(val, 10); break;
+              case "LNOBJ": bmsData.header.lnobj = val; break;
+              case "DEFEXRANK": bmsData.header.defexrank = parseFloat(val); break;
+              case "COMMENT": bmsData.header.comment = val; break;
+              case "STAGEFILE": bmsData.header.stagefile = val; break;
+              case "BANNER": bmsData.header.banner = val; break;
+              case "BACKBMP": bmsData.header.backbmp = val; break;
+              case "WAV00": bmsData.header.wav00 = val; break;
+              case "BMP00": bmsData.header.bmp00 = val; break;
+              case "PREVIEW": bmsData.header.preview = val; break;
+              default: bmsData.header[key] = val; break;
+            }
           }
         }
       }
@@ -534,6 +550,8 @@ export function encodeBms(bmsData: BmsData, baseMode: 16 | 36 | 62 | boolean): s
     if (!dict) return;
     const keys = Object.keys(dict).map(k => parseInt(k.toString())).sort((a, b) => a - b);
     for (const k of keys) {
+      const keyName = `${prefix}${encodeBmsValue(k, base)}`.toUpperCase();
+      if (expansionHeaderKeys.has(keyName)) continue; // skip if already defined in expansion field
       lines.push(`#${prefix}${encodeBmsValue(k, base)} ${dict[k]}`);
     }
   };
@@ -544,6 +562,8 @@ export function encodeBms(bmsData: BmsData, baseMode: 16 | 36 | 62 | boolean): s
     for (const k of keys) {
       const isTiming = prefix === "BPM" || prefix === "STOP" || prefix === "SCROLL";
       const baseVal = isTiming ? timingBase : base;
+      const keyName = `${prefix}${encodeBmsValueWithBase(k, baseVal)}`.toUpperCase();
+      if (expansionHeaderKeys.has(keyName)) continue; // skip if already defined in expansion field
       lines.push(`#${prefix}${encodeBmsValueWithBase(k, baseVal)} ${dict[k]}`);
     }
   };

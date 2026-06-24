@@ -155,6 +155,19 @@ function fixLongNoteValuePairings(notes: BmsNote[], lnobjVal: number): BmsNote[]
 
   let updatedNotes = [...notes];
   
+  // 수집된 pairs의 노정들에 partnerId가 누락되어 있다면 상호 기입해 줍니다.
+  pairs.forEach(pair => {
+    updatedNotes = updatedNotes.map(n => {
+      if (n.id === pair.start.id && !n.partnerId) {
+        return { ...n, partnerId: pair.end.id };
+      }
+      if (n.id === pair.end.id && !n.partnerId) {
+        return { ...n, partnerId: pair.start.id };
+      }
+      return n;
+    });
+  });
+  
   pairs.forEach(pair => {
     if (lnobjVal > 0) {
       const currentStart = updatedNotes.find(n => n.id === pair.start.id);

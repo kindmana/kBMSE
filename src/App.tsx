@@ -18,6 +18,7 @@ import { BmsDiffModal } from './components/ui/BmsDiffModal';
 import { BmsValidationErrorModal } from './components/ui/BmsValidationErrorModal';
 import { BmsValidationError } from './utils/bmsValidator';
 import { TimingValueModal } from './components/ui/TimingValueModal';
+import { KeyChangeModal } from './components/ui/KeyChangeModal';
 import { TimeSpaceModal } from './components/ui/TimeSpaceModal';
 import { TimeBpmModal } from './components/ui/TimeBpmModal';
 import { TimeStopModal } from './components/ui/TimeStopModal';
@@ -115,6 +116,10 @@ function App() {
   const [timingModalChannel, setTimingModalChannel] = useState(0);
   const [timingModalDefaultValue, setTimingModalDefaultValue] = useState<number | undefined>(undefined);
   const timingModalClickInfo = useRef<{ measure: number; position: number; actualChannel: number; actualIndex: number; editingNoteId?: string } | null>(null);
+  
+  const [isKeyChangeModalOpen, setIsKeyChangeModalOpen] = useState(false);
+  const [keyChangeModalDefaultValue, setKeyChangeModalDefaultValue] = useState<number>(0);
+  const [keyChangeModalNoteId, setKeyChangeModalNoteId] = useState<string | null>(null);
   const [bmsFilesToSelect, setBmsFilesToSelect] = useState<File[]>([]);
   const [isBmsSelectionOpen, setIsBmsSelectionOpen] = useState(false);
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
@@ -1699,6 +1704,11 @@ function App() {
 
     window.addEventListener('resize', resizeCanvas);
     
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('contextmenu', handleContextMenu);
+    
     const resizeObserver = new ResizeObserver(() => {
       resizeCanvas();
     });
@@ -1708,6 +1718,7 @@ function App() {
 
     return () => {
       window.removeEventListener('resize', resizeCanvas);
+      window.removeEventListener('contextmenu', handleContextMenu);
       resizeObserver.disconnect();
     };
   }, []); // Only bind once, state is handled via refs
@@ -2757,6 +2768,17 @@ function App() {
 
       return undefined;
     };
+
+    if (e.button === 2) {
+      e.preventDefault();
+      const clicked = findNoteAtPixel(x, y);
+      if (clicked) {
+        setKeyChangeModalNoteId(clicked.note.id);
+        setKeyChangeModalDefaultValue(clicked.note.value);
+        setIsKeyChangeModalOpen(true);
+      }
+      return;
+    }
     
     const bmsPos = getBmsPosition(x, y);
     if (!bmsPos) return;
@@ -3050,6 +3072,29 @@ function App() {
     requestRender();
   };
 
+  const handleApplyKeyChange = (newValue: number) => {
+    if (!keyChangeModalNoteId || !bmsDataRef.current) return;
+    const note = bmsDataRef.current.notes.find(n => n.id === keyChangeModalNoteId);
+    if (!note) return;
+
+    commitHistory();
+
+    const updatesArray: { id: string, updates: Partial<BmsNote> }[] = [
+      { id: note.id, updates: { value: newValue } }
+    ];
+
+    // 채널 방식 롱노트(51~69)인 경우 파트너의 value도 동기화
+    if (note.partnerId && note.channel >= 0x51 && note.channel <= 0x69) {
+      const partner = bmsDataRef.current.notes.find(n => n.id === note.partnerId);
+      if (partner) {
+        updatesArray.push({ id: partner.id, updates: { value: newValue } });
+      }
+    }
+
+    updateNotes(updatesArray);
+    requestRender();
+  };
+
   // ==========================================
   // 시간편집 (Time Edit, F1) 신규 훅 및 유틸 바인딩
   // ==========================================
@@ -3202,6 +3247,7 @@ function App() {
     <canvas 
       ref={canvasRef} 
       onMouseDown={handleCanvasMouseDown} 
+      onContextMenu={(e) => e.preventDefault()} 
       onMouseMove={(e) => {
         const rect = canvasRef.current?.getBoundingClientRect();
         if (!rect) return;
@@ -3267,6 +3313,16 @@ function App() {
     channel={timingModalChannel}
     onApply={handleApplyTimingValue}
     defaultValue={timingModalDefaultValue}
+  />
+)}
+
+{isKeyChangeModalOpen && (
+  <KeyChangeModal 
+    isOpen={true}
+    onClose={() => setIsKeyChangeModalOpen(false)}
+    useBase62={useBase62}
+    defaultValue={keyChangeModalDefaultValue}
+    onApply={handleApplyKeyChange}
   />
 )}
 
