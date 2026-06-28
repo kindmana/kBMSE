@@ -48,7 +48,9 @@ export const LeftSidebar = ({
     audioBuffers,
     settings,
     lockVerticalPosition,
-    setLockVerticalPosition
+    setLockVerticalPosition,
+    playbackSpeed,
+    setPlaybackSpeed
   } = useEditorStore();
 
   const lang = settings.language || 'en';
@@ -389,6 +391,24 @@ export const LeftSidebar = ({
             >
               <Square size={12} /> <span style={{ whiteSpace: 'nowrap' }}>{playBtnTexts.stop}</span>
             </button>
+          </div>
+          
+          {/* 재생 속도 조절 슬라이더 */}
+          <div style={{ marginTop: '12px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+              <span>{lang === 'ko' ? '재생 속도' : lang === 'ja' ? '再生速度' : 'Playback Speed'}</span>
+              <span style={{ fontWeight: 'bold', color: 'var(--accent-color)' }}>{playbackSpeed.toFixed(2)}x</span>
+            </div>
+            <input 
+              type="range" 
+              min="0.25" 
+              max="2.0" 
+              step="0.05" 
+              value={playbackSpeed} 
+              disabled={isLoading}
+              onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
+              style={{ width: '100%', cursor: isLoading ? 'not-allowed' : 'pointer' }}
+            />
           </div>
         </div>
       )}

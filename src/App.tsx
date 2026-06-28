@@ -3,7 +3,7 @@ import { useEditorStore } from './store/editorStore';
 import { encodeBmsValue, decodeBmsValue, BmsData, BmsNote } from './parser/bmsParser';
 import { getRecentFiles, RecentFile } from './utils/fileSystem';
 import { calculateTimeline } from './utils/timelineCalculator';
-import { getAudioContext, playSound, playSoloSound, stopAllSounds, findAudioBuffer } from './utils/audioPlayer';
+import { getAudioContext, playSound, playSoloSound, stopAllSounds, findAudioBuffer, updateActiveSourcesPlaybackRate } from './utils/audioPlayer';
 import { useFileOperations } from './hooks/useFileOperations';
 import './App.css';
 
@@ -171,8 +171,25 @@ function App() {
   }, [isPlaying]);
 
   const currentSpeed = useEditorStore((state) => state.playbackSpeed);
+
   useEffect(() => {
-    playbackSpeedRef.current = currentSpeed;
+    if (isPlayingRef.current) {
+      const actx = getAudioContext();
+      const now = actx.currentTime;
+      
+      // Calculate current elapsed time continuously
+      const elapsed = (now - playStartRealTimeRef.current) * playbackSpeedRef.current + playStartTimeOffsetRef.current;
+      
+      // Shift playback timeline offsets smoothly to prevent skips/stutters
+      playStartRealTimeRef.current = now;
+      playStartTimeOffsetRef.current = elapsed;
+      playbackSpeedRef.current = currentSpeed;
+      
+      // Update currently playing sound rates immediately
+      updateActiveSourcesPlaybackRate(currentSpeed);
+    } else {
+      playbackSpeedRef.current = currentSpeed;
+    }
   }, [currentSpeed]);
 
   // Recalculate timeline when bmsData changes
@@ -954,7 +971,7 @@ function App() {
                   const currentBuffers = useEditorStore.getState().audioBuffers;
                   const buffer = findAudioBuffer(filename, currentBuffers);
                   if (buffer) {
-                    playSound(buffer, playTime, note.id, note.value);
+                    playSound(buffer, playTime, note.id, note.value, undefined, speed);
                   }
                 }
               }

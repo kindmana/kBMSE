@@ -127,7 +127,8 @@ export function playSound(
   when: number,
   noteId?: string,
   wavIndex?: number,
-  offset?: number
+  offset?: number,
+  playbackRate?: number
 ): AudioBufferSourceNode | null {
   const ctx = getAudioContext();
   if (ctx.state === 'suspended') {
@@ -154,6 +155,9 @@ export function playSound(
   try {
     const source = ctx.createBufferSource();
     source.buffer = buffer;
+    if (playbackRate !== undefined) {
+      source.playbackRate.value = playbackRate;
+    }
     if (masterGain) {
       source.connect(masterGain);
     } else {
@@ -287,4 +291,14 @@ export function findAudioBuffer(filename: string, audioBuffers: Record<string, A
   }
 
   return null;
+}
+
+export function updateActiveSourcesPlaybackRate(speed: number) {
+  activeSources.forEach((item) => {
+    try {
+      item.source.playbackRate.value = speed;
+    } catch (e) {
+      // Ignore if already stopped or failed
+    }
+  });
 }

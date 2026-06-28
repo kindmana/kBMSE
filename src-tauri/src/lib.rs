@@ -184,6 +184,18 @@ fn get_args_file() -> Option<String> {
     None
 }
 
+#[tauri::command]
+fn read_clipboard_text() -> Result<String, String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.get_text().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_clipboard_text(text: String) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.set_text(text).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -194,7 +206,9 @@ pub fn run() {
             load_bms_by_path,
             save_bms_dialog,
             write_local_file,
-            get_args_file
+            get_args_file,
+            read_clipboard_text,
+            write_clipboard_text
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
