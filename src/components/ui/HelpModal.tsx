@@ -34,7 +34,7 @@ export const HelpModal = ({ isOpen, onClose, defaultTab }: HelpModalProps) => {
     shortcuts: { ko: '단축키 & 조작', en: 'Hotkeys & Control', ja: 'ショートカット＆操作', icon: Keyboard },
     leftSidebar: { ko: '왼쪽 패널 (파일)', en: 'Left Sidebar (File)', ja: '左パネル（ファイル）', icon: Wrench },
     rightSidebar: { ko: '오른쪽 패널 (설정)', en: 'Right Sidebar (Settings)', ja: '右パネル（設定）', icon: Sliders },
-    settings: { ko: '상단 바 (Topbar)', en: 'Topbar Controls', ja: '上부バー（Topbar）', icon: Settings },
+    settings: { ko: '상단 바 (Topbar)', en: 'Topbar Controls', ja: '上部バー（Topbar）', icon: Settings },
   };
 
   const modalContent = (
@@ -101,13 +101,13 @@ export const HelpModal = ({ isOpen, onClose, defaultTab }: HelpModalProps) => {
           lineHeight: '1.45',
           color: 'var(--text-secondary)'
         }}>
-          <strong>kBMSE</strong>는 {
-            t(
-              '누구나 완벽하게 나만의 BMS 음악 패턴을 창작할 수 있는 차세대 에디터입니다. 끊김 없이 부드러운 바이너리 스트리밍 재생 시스템과 유려한 테마를 결합하여 가장 쾌적하고 세련된 창작 공간을 선사합니다.',
-              'is a next-generation BMS editor designed for rhythm game creators to craft custom music patterns. Combining smooth binary streaming audio with rich aesthetics, it offers a polished workspace for your creative journey.',
-              'は、誰もが完璧に自分だけのBMS音楽パターンを創作できる次世代エディタです。途切れなくスムーズなバイナリ・ストリーミング再生システムと美麗なテーマを組み合わせ、最も快適で洗練された創作空間を提供します。'
-            )
-          }
+          {lang === 'ko' ? (
+            <><strong>kBMSE</strong>는 누구나 완벽하게 나만의 BMS 음악 패턴을 창작할 수 있는 차세대 에디터입니다. 끊김 없이 부드러운 바이너리 스트리밍 재생 시스템과 유려한 테마를 결합하여 가장 쾌적하고 세련된 창작 공간을 선사합니다.</>
+          ) : lang === 'ja' ? (
+            <><strong>kBMSE</strong>は、誰もが完璧に自分だけのBMS音楽パターンを創作できる次世代エディタです。途切れなくスムーズなバイナリ・ストリーミング再生システムと美麗なテーマを組み合わせ、最も快適で洗練された創作空間を提供します。</>
+          ) : (
+            <><strong>kBMSE</strong> is a next-generation BMS editor designed for rhythm game creators to craft custom music patterns. Combining smooth binary streaming audio with rich aesthetics, it offers a polished workspace for your creative journey.</>
+          )}
         </div>
 
         {/* Tab Headers */}
@@ -344,10 +344,10 @@ export const HelpModal = ({ isOpen, onClose, defaultTab }: HelpModalProps) => {
                     <strong>{t('2. 열기 (Open)', '2. Open', '2. 開く (Open)')}</strong>: {t('기존에 소장한 BMS 패턴 파일을 가져오며 관련 키음 폴더의 사운드 리소스들을 연동해옵니다.', 'Loads an existing BMS pattern file and binds its related keysound folder audio resources.', '既存のBMSファイルを読み込み、関連するキー音フォルダの音源データを連携します。')}
                   </div>
                   <div>
-                    <strong>{t('3. 저장 (Save)', '3. Save (Ctrl+S)', '3. 保存 (Save)')}</strong>: {t('현재까지 캔버스에 배치한 노트 데이터를 작업 중인 원본 파일에 그대로 저장합니다. (Ctrl+S)', 'Saves current note layouts and timing parameters directly to the original file. (Ctrl+S)', '현재까지 캔버스에 배치한 노트 데이터를 작업 중인 원본 파일에 그대로 저장합니다. (Ctrl+S)')}
+                    <strong>{t('3. 저장 (Save)', '3. Save (Ctrl+S)', '3. 保存 (Save)')}</strong>: {t('현재까지 캔버스에 배치한 노트 데이터를 작업 중인 원본 파일에 그대로 저장합니다. (Ctrl+S)', 'Saves current note layouts and timing parameters directly to the original file. (Ctrl+S)', '現在のキャンバスに配置されたノーツデータを、作業中の元のファイルにそのまま保存します。(Ctrl+S)')}
                   </div>
                   <div>
-                    <strong>{t('4. 새로 저장 (Save As)', '4. Save As (Ctrl+Shift+S)', '4. 名前を付けて保存 (Save As)')}</strong>: {t('작업 중인 패턴 데이터를 완전히 별개의 신규 파일 경로로 지정하여 저장합니다. (Ctrl+Shift+S)', 'Exports the active workspace data to a newly designated file path. (Ctrl+Shift+S)', '작업 중인 패턴 데이터를 완전히 별개의 신규 파일 경로로 지정하여 저장합니다. (Ctrl+Shift+S)')}
+                    <strong>{t('4. 새로 저장 (Save As)', '4. Save As (Ctrl+Shift+S)', '4. 名前を付けて保存 (Save As)')}</strong>: {t('작업 중인 패턴 데이터를 완전히 별개의 신규 파일 경로로 지정하여 저장합니다. (Ctrl+Shift+S)', 'Exports the active workspace data to a newly designated file path. (Ctrl+Shift+S)', '編集中のパターンデータを完全に別の新しいファイルパスに指定して保存します。(Ctrl+Shift+S)')}
                   </div>
                 </div>
               </div>
@@ -610,8 +610,8 @@ export const HelpModal = ({ isOpen, onClose, defaultTab }: HelpModalProps) => {
                     {t(' 타이밍 이벤트 인덱싱을 16진수 혹은 36/62진수 중 파일 기준으로 자동 판단하여 로드하거나 특정 진수로 고정합니다.', ' Selects indexing behavior for timing and keysound definitions (Auto/36-base/62-base).', ' ノーツ値や各種拡張定義のインデックスを 16進数、36進数、62進数から自動判断、または手動で強制指定します。')}
                   </div>
                   <div>
-                    <strong>{t('3. 휠 스크롤 방향 (Scroll Direction)', '3. Scroll Direction', '3. スクリール方向')}</strong>: 
-                    {t(' 휠 스크롤 조작 시 격자 화면이 흐르는 방향을 정방향(Normal) 또는 역방향(Reverse) 중 원하는 감도로 매칭합니다.', ' Configures mouse wheel scroll behaviors between Normal and Reverse speeds.', ' マウスホイールの回転に対するタイムライン의移動方向 (Normal/Reverse) や感度を設定します。')}
+                    <strong>{t('3. 휠 스크롤 방향 (Scroll Direction)', '3. Scroll Direction', '3. スクロール方向')}</strong>: 
+                    {t(' 휠 스크롤 조작 시 격자 화면이 흐르는 방향을 정방향(Normal) 또는 역방향(Reverse) 중 원하는 감도로 매칭합니다.', ' Configures mouse wheel scroll behaviors between Normal and Reverse speeds.', ' マウスホイールの回転に対するタイムラインの移動方向 (Normal/Reverse) や感度を設定します。')}
                   </div>
                 </div>
               </div>
@@ -632,7 +632,7 @@ export const HelpModal = ({ isOpen, onClose, defaultTab }: HelpModalProps) => {
           color: 'var(--text-secondary)',
           background: 'rgba(255, 255, 255, 0.015)'
         }}>
-          <span>kBMSE BMS editor v0.1.0</span>
+          <span>kBMSE BMS editor v0.4.1</span>
           <span>made by kindmana</span>
         </div>
       </div>

@@ -398,7 +398,7 @@ function App() {
   };
 
   // Replaced with refs for performance:
-  const leftWidthRef = useRef(280);
+  const leftWidthRef = useRef(300);
   const rightWidthRef = useRef(300);
   const appContainerRef = useRef<HTMLDivElement>(null);
 

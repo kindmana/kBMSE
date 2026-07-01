@@ -52,7 +52,7 @@ export const translations = {
     
     // Setting dropdown
     generalSettings: 'General Settings',
-    visualSettings: 'Visual Settings',
+    visualSettings: 'Visual',
     scrollDirection: 'Scroll Direction',
     scrollDirectionNormal: 'Normal',
     scrollDirectionReverse: 'Reverse',
@@ -168,7 +168,7 @@ export const translations = {
     
     // Setting dropdown
     generalSettings: '일반 옵션 설정',
-    visualSettings: '비주얼 옵션 설정',
+    visualSettings: '비주얼 설정',
     scrollDirection: '휠 스크롤 방향',
     scrollDirectionNormal: '정방향',
     scrollDirectionReverse: '역방향',
@@ -284,7 +284,7 @@ export const translations = {
     
     // Setting dropdown
     generalSettings: '一般オプション設定',
-    visualSettings: 'ビジュアルオプション設定',
+    visualSettings: 'ビジュアル',
     scrollDirection: 'ホイールスクロール方向',
     scrollDirectionNormal: '正方向',
     scrollDirectionReverse: '逆方向',

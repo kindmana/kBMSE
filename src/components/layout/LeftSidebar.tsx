@@ -202,10 +202,10 @@ export const LeftSidebar = ({
             onChange={(e) => setLockVerticalPosition(e.target.checked)}
             style={{ cursor: 'pointer' }}
           />
-          <span style={{ fontWeight: '500' }}>{lang === 'ko' ? '수직 위치 고정' : 'Lock Vertical Position'}</span>
+          <span style={{ fontWeight: '500' }}>{lang === 'ko' ? '수직 위치 고정' : lang === 'ja' ? '垂直位置の固定' : 'Lock Vertical Position'}</span>
         </label>
         <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '4px', paddingLeft: '22px', lineHeight: '1.3' }}>
-          {lang === 'ko' ? '체크 시 키보드 상하 이동 및 마우스 상하 드래그가 고정됩니다.' : 'Disables vertical keyboard and mouse movement.'}
+          {lang === 'ko' ? '체크 시 키보드 상하 이동 및 마우스 상하 드래그가 고정됩니다.' : lang === 'ja' ? 'チェックすると、キーボードでの上下移動およびマウスでの上下ドラッグが固定されます。' : 'Disables vertical keyboard and mouse movement.'}
         </div>
       </div>
 
@@ -416,7 +416,7 @@ export const LeftSidebar = ({
       {/* 5. 검사 */}
       {hasBmsData && (
         <div style={{ marginBottom: '20px' }}>
-          <div className="panel-title">{lang === 'ko' ? '검사' : 'BMS Diff'}</div>
+          <div className="panel-title">{lang === 'ko' ? '검사' : lang === 'ja' ? '検査' : 'BMS Diff'}</div>
           <button 
             className="tool-button" 
             style={sidebarBtnStyle}
@@ -426,7 +426,7 @@ export const LeftSidebar = ({
             }}
           >
             <Scale size={14} style={{ color: 'var(--accent-color)' }} />
-            <span style={{ whiteSpace: 'nowrap' }}>{lang === 'ko' ? '엇갈림 검사' : 'Misalignment Diff'}</span>
+            <span style={{ whiteSpace: 'nowrap' }}>{lang === 'ko' ? '엇갈림 검사' : lang === 'ja' ? 'ズレ検出' : 'Misalignment Diff'}</span>
           </button>
         </div>
       )}

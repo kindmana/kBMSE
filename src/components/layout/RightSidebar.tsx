@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { FileCode2, ChevronDown, ChevronRight, Music, Image, Monitor } from 'lucide-react';
+import { FileCode2, Music, Image } from 'lucide-react';
 import { BmsData, encodeBmsValue } from '../../parser/bmsParser';
 import { TextInput, TextAreaInput, NumberInput, SelectInput, FileInput, LnObjInput } from '../ui/PropertyInputs';
 import { useEditorStore } from '../../store/editorStore';
@@ -173,17 +173,37 @@ export const RightSidebar = ({
   const rTxt = getRightSidebarTexts();
   const hLabels = getHeaderLabels();
 
-  const [openSections, setOpenSections] = useState({
-    header: true,
-    expansion: true,
-    wavbmp: true,
-    measure: true,
-    display: true
-  });
+  const [activeSection, setActiveSection] = useState<'header' | 'wavbmp' | 'measure' | 'display' | 'expansion'>('header');
 
-  const toggleSection = (section: keyof typeof openSections) => {
-    setOpenSections(prev => ({ ...prev, [section]: !prev[section] }));
+  const getTabLabels = () => {
+    if (lang === 'ko') {
+      return {
+        header: '헤더',
+        wavbmp: '리스트',
+        measure: '마디',
+        display: '격자',
+        expansion: '확장'
+      };
+    }
+    if (lang === 'ja') {
+      return {
+        header: 'ヘッダー',
+        wavbmp: 'リスト',
+        measure: '小節',
+        display: 'グリッド',
+        expansion: '拡張'
+      };
+    }
+    return {
+      header: 'Header',
+      wavbmp: 'List',
+      measure: 'Measure',
+      display: 'Grid',
+      expansion: 'Expansion'
+    };
   };
+
+  const tabLabels = getTabLabels();
 
   const [activeTab, setActiveTab] = useState<'wav' | 'bmp'>('wav');
   
@@ -511,32 +531,71 @@ export const RightSidebar = ({
     );
   };
 
-  const AccordionHeader = ({ title, section, icon }: { title: string, section: keyof typeof openSections, icon?: React.ReactNode }) => (
-    <div 
-      className="panel-title" 
-      style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', userSelect: 'none', margin: '0', padding: '10px 0', borderBottom: openSections[section] ? '1px solid var(--border-color)' : 'none' }}
-      onClick={() => toggleSection(section)}
-    >
-      <span style={{ marginRight: '5px', display: 'flex', alignItems: 'center' }}>
-        {openSections[section] ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-      </span>
-      {icon && <span style={{ marginRight: '5px', display: 'flex', alignItems: 'center' }}>{icon}</span>}
-      {title}
-    </div>
-  );
-
   return (
-    <aside className="right-panel" style={{ display: 'flex', flexDirection: 'column', overflowY: 'auto', gap: '10px' }}>
+    <aside className="right-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '15px', padding: '15px', boxSizing: 'border-box', overflowY: 'hidden' }}>
       {/* Hidden file inputs for WAV/BMP lists */}
       <input type="file" ref={wavInputRef} style={{ display: 'none' }} onChange={handleWavFileChange} />
       <input type="file" ref={bmpInputRef} style={{ display: 'none' }} onChange={handleBmpFileChange} />
 
-      {/* Header Info Section */}
-      <div style={{ display: 'flex', flexDirection: 'column', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
-        <AccordionHeader title={rTxt.headerInfo} section="header" />
-        
-        {openSections.header && (
-          <div style={{ marginTop: '10px' }}>
+      {/* 5-Tab Buttons Grid (2-row layout: 2 + 3) */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flexShrink: 0 }}>
+        {/* Row 1 (Header, List) */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '4px' }}>
+          {(['header', 'wavbmp'] as const).map((key) => (
+            <button
+              key={key}
+              onClick={() => setActiveSection(key)}
+              style={{
+                padding: '8px 2px',
+                fontSize: '0.75rem',
+                fontWeight: '600',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                background: activeSection === key ? 'var(--accent-color)' : 'rgba(255, 255, 255, 0.05)',
+                color: activeSection === key ? '#fff' : 'var(--text-secondary)',
+                textAlign: 'center',
+                transition: 'all 0.2s',
+                outline: 'none',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              {tabLabels[key]}
+            </button>
+          ))}
+        </div>
+        {/* Row 2 (Measure, Grid, Expansion) */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px' }}>
+          {(['measure', 'display', 'expansion'] as const).map((key) => (
+            <button
+              key={key}
+              onClick={() => setActiveSection(key)}
+              style={{
+                padding: '8px 2px',
+                fontSize: '0.75rem',
+                fontWeight: '600',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                background: activeSection === key ? 'var(--accent-color)' : 'rgba(255, 255, 255, 0.05)',
+                color: activeSection === key ? '#fff' : 'var(--text-secondary)',
+                textAlign: 'center',
+                transition: 'all 0.2s',
+                outline: 'none',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              {tabLabels[key]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Tab Panels (Scrollable area) */}
+      <div style={{ flex: 1, overflowY: 'auto', paddingRight: '2px' }}>
+        {/* 1. Header Info Section */}
+        {activeSection === 'header' && (
+          <div>
             {bmsData ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <TextInput label={hLabels.title} value={bmsData.header.title} onChange={(val: string) => updateHeader({ title: val })} onBlur={() => commitHistory()} />
@@ -604,58 +663,10 @@ export const RightSidebar = ({
             )}
           </div>
         )}
-      </div>
 
-      {/* Expansion Code (확장 명령) Section */}
-      <div style={{ display: 'flex', flexDirection: 'column', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
-        <AccordionHeader title={rTxt.expansionCode} section="expansion" />
-        {openSections.expansion && (
-          <div style={{ marginTop: '10px' }}>
-            {bmsData ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <textarea
-                  value={expansionText}
-                  onChange={(e) => setExpansionText(e.target.value)}
-                  onFocus={() => { isExpansionFocused.current = true; }}
-                  onBlur={() => { 
-                    isExpansionFocused.current = false; 
-                    handleExpansionCodeChange(expansionText); 
-                    commitHistory();
-                  }}
-                  placeholder={rTxt.expansionPlaceholder}
-                  style={{
-                    width: '100%',
-                    height: '110px',
-                    background: 'var(--bg-secondary)',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-primary)',
-                    borderRadius: '4px',
-                    padding: '8px',
-                    fontSize: '0.8rem',
-                    fontFamily: 'monospace',
-                    resize: 'vertical',
-                    outline: 'none',
-                    lineHeight: '1.4'
-                  }}
-                />
-                <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
-                  {rTxt.expansionHelp}
-                </span>
-              </div>
-            ) : (
-              <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center', padding: '20px 0' }}>
-                {rTxt.noBms}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* WAV / BMP List Section */}
-      <div style={{ display: 'flex', flexDirection: 'column', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
-        <AccordionHeader title={rTxt.keysoundBgaList} section="wavbmp" />
-        {openSections.wavbmp && (
-          <div style={{ marginTop: '10px' }}>
+        {/* 2. WAV / BMP List Section */}
+        {activeSection === 'wavbmp' && (
+          <div>
             {bmsData ? renderWavBmpList() : (
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center', padding: '20px 0' }}>
                 {rTxt.noBms}
@@ -663,13 +674,10 @@ export const RightSidebar = ({
             )}
           </div>
         )}
-      </div>
 
-      {/* Measure Length List Section */}
-      <div style={{ display: 'flex', flexDirection: 'column', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
-        <AccordionHeader title={rTxt.measureLength} section="measure" />
-        {openSections.measure && (
-          <div style={{ marginTop: '10px' }}>
+        {/* 3. Measure Length List Section */}
+        {activeSection === 'measure' && (
+          <div>
             {bmsData ? renderMeasureList() : (
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center', padding: '20px 0' }}>
                 {rTxt.noBms}
@@ -677,14 +685,10 @@ export const RightSidebar = ({
             )}
           </div>
         )}
-      </div>
 
-      {/* Display Section (Grid Snap & Zoom) */}
-      <div style={{ display: 'flex', flexDirection: 'column', paddingBottom: '10px' }}>
-        <AccordionHeader title={rTxt.displaySettings} section="display" />
-        {openSections.display && (
-          <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            
+        {/* 4. Display Section (Grid Snap & Zoom) */}
+        {activeSection === 'display' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
             {/* Grid Snap Sub-section */}
             <div>
               <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '5px' }}>
@@ -776,7 +780,7 @@ export const RightSidebar = ({
             {/* Zoom Sub-section */}
             <div>
               <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <Monitor size={14} style={{ display: 'none' }} /> {rTxt.zoom}
+                {rTxt.zoom}
               </div>
               
               <div style={{ marginBottom: '10px' }}>
@@ -845,8 +849,49 @@ export const RightSidebar = ({
             </div>
           </div>
         )}
+
+        {/* 5. Expansion Code Section */}
+        {activeSection === 'expansion' && (
+          <div>
+            {bmsData ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <textarea
+                  value={expansionText}
+                  onChange={(e) => setExpansionText(e.target.value)}
+                  onFocus={() => { isExpansionFocused.current = true; }}
+                  onBlur={() => { 
+                    isExpansionFocused.current = false; 
+                    handleExpansionCodeChange(expansionText); 
+                    commitHistory();
+                  }}
+                  style={{
+                    width: '100%',
+                    height: '200px',
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border-color)',
+                    color: 'var(--text-primary)',
+                    borderRadius: '4px',
+                    padding: '8px',
+                    fontSize: '0.8rem',
+                    fontFamily: 'monospace',
+                    resize: 'vertical',
+                    outline: 'none',
+                    lineHeight: '1.4'
+                  }}
+                />
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                  {rTxt.expansionHelp}
+                </span>
+              </div>
+            ) : (
+              <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center', padding: '20px 0' }}>
+                {rTxt.noBms}
+              </div>
+            )}
+          </div>
+        )}
       </div>
-      
+
       {bmsData && editingMeasureIndex !== null && (
         <MeasureLengthModal
           isOpen={true}

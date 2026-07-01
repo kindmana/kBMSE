@@ -509,7 +509,7 @@ export const SettingsModal = ({ isOpen, onClose, initialTab }: SettingsModalProp
               }}
             >
               <Palette size={16} />
-              {t("비주얼 설정", "Visual Settings", "ビジュアル設定")}
+              {t("비주얼 설정", "Visual", "ビジュアル")}
             </button>
           </div>
 
