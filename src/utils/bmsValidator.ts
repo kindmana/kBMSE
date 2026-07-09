@@ -3,7 +3,7 @@ import { calculateTimeline } from './timelineCalculator';
 
 export interface BmsValidationError {
   id: string;
-  type: 'overlap' | 'ln_pair' | 'ln_overlap' | 'ln_length' | 'lnobj' | 'bpm' | 'stop' | 'scroll' | 'measure' | 'header';
+  type: 'overlap' | 'near_overlap' | 'ln_pair' | 'ln_overlap' | 'ln_length' | 'lnobj' | 'bpm' | 'stop' | 'scroll' | 'measure' | 'header';
   measure?: number;
   laneName?: string;
   message: string;
@@ -74,13 +74,14 @@ export function validateBmsData(bmsData: BmsData, useBase62: 16 | 36 | 62 | bool
     }
   }
 
-  // 1. 완전 겹침 (Perfect Overlap) 검사
-  // 동일 채널에서 절대 시간 차이가 0.0001초(0.1ms) 이내인 극단적 겹침 검출
+  // 1. 완전 겹침 (Perfect Overlap) 및 5ms 근접 경고 (Near Overlap) 검사
   const sortedByChannel = [...notes].map(n => ({
     ...n,
     time: timeMap[n.id] ?? 0
   })).sort((a, b) => {
     if (a.channel !== b.channel) return a.channel - b.channel;
+    if (a.measure !== b.measure) return a.measure - b.measure;
+    if (Math.abs(a.position - b.position) > 1e-9) return a.position - b.position;
     return a.time - b.time;
   });
 
@@ -89,13 +90,14 @@ export function validateBmsData(bmsData: BmsData, useBase62: 16 | 36 | 62 | bool
     const b = sortedByChannel[i + 1];
     
     if (a.channel === b.channel) {
-      // BGM 채널인 경우 가상 BGM 레이어(index % 100)가 동일할 때만 완전 겹침으로 판단
+      // BGM 채널인 경우 가상 BGM 레이어(index % 100)가 동일할 때만 검사
       if (a.channel === 0x01 && (a.index % 100) !== (b.index % 100)) {
         continue;
       }
       
-      const timeDiff = Math.abs(b.time - a.time);
-      if (timeDiff <= 0.0001) {
+      const isPerfectOverlap = a.measure === b.measure && Math.abs(a.position - b.position) < 1e-9;
+      
+      if (isPerfectOverlap) {
         const channelName = getChannelName(a.channel);
         errors.push({
           id: crypto.randomUUID(),
@@ -103,8 +105,30 @@ export function validateBmsData(bmsData: BmsData, useBase62: 16 | 36 | 62 | bool
           measure: a.measure,
           laneName: channelName,
           position: a.position,
-          message: `[완전 겹침] 마디 ${a.measure}의 ${channelName} 레인에 물리적으로 동일한 시점에 포개어진 완전 겹침 중복 노트가 존재합니다.`
+          message: `[완전 겹침] 마디 ${a.measure}의 ${channelName} 레인에 동일 위치에 완전히 포개어진 중복 노트가 존재합니다.`
         });
+      } else {
+        // 플레이 영역 중 '일반' 연주 채널인 경우에만 5ms 이내 근접 검사 (숨김/지뢰 채널 제외)
+        const isNormalPlayable = 
+          (a.channel >= 0x11 && a.channel <= 0x19) || 
+          (a.channel >= 0x21 && a.channel <= 0x29) || 
+          (a.channel >= 0x51 && a.channel <= 0x59) || 
+          (a.channel >= 0x61 && a.channel <= 0x69);
+          
+        if (isNormalPlayable) {
+          const timeDiff = Math.abs(b.time - a.time);
+          if (timeDiff <= 0.005) {
+            const channelName = getChannelName(a.channel);
+            errors.push({
+              id: crypto.randomUUID(),
+              type: 'near_overlap' as any,
+              measure: a.measure,
+              laneName: channelName,
+              position: a.position,
+              message: `[5ms 이내 근접] 마디 ${a.measure}의 ${channelName} 레인에 매우 가깝게 배치된 일반 노트 쌍이 존재합니다. (시간차: ${(timeDiff * 1000).toFixed(1)}ms)`
+            });
+          }
+        }
       }
     }
   }
@@ -118,6 +142,8 @@ export function validateBmsData(bmsData: BmsData, useBase62: 16 | 36 | 62 | bool
   
   for (const chan of lnChannels) {
     const chanNotes = notes.filter(n => n.channel === chan).sort((a, b) => {
+      if (a.measure !== b.measure) return a.measure - b.measure;
+      if (Math.abs(a.position - b.position) > 1e-9) return a.position - b.position;
       const timeA = timeMap[a.id] ?? 0;
       const timeB = timeMap[b.id] ?? 0;
       return timeA - timeB;
@@ -183,6 +209,8 @@ export function validateBmsData(bmsData: BmsData, useBase62: 16 | 36 | 62 | bool
       
       for (const chan of playableChannels) {
         const chanNotes = notes.filter(n => n.channel === chan).sort((a, b) => {
+          if (a.measure !== b.measure) return a.measure - b.measure;
+          if (Math.abs(a.position - b.position) > 1e-9) return a.position - b.position;
           const timeA = timeMap[a.id] ?? 0;
           const timeB = timeMap[b.id] ?? 0;
           return timeA - timeB;

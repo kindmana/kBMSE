@@ -2,12 +2,11 @@ import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useEditorStore } from './store/editorStore';
 import { encodeBmsValue, decodeBmsValue, BmsData, BmsNote } from './parser/bmsParser';
 import { getRecentFiles, RecentFile } from './utils/fileSystem';
-import { calculateTimeline } from './utils/timelineCalculator';
-import { getAudioContext, playSound, playSoloSound, stopAllSounds, findAudioBuffer, updateActiveSourcesPlaybackRate } from './utils/audioPlayer';
+import { getAudioContext, playSound, playSoloSound, findAudioBuffer } from './utils/audioPlayer';
 import { useFileOperations } from './hooks/useFileOperations';
 import './App.css';
 
-import { LAYOUT, BASE_MEASURE_HEIGHT, getTargetLaneIndex, getFilteredLayout } from './constants/layout';
+import { BASE_MEASURE_HEIGHT, getTargetLaneIndex, getActiveLayout as getActiveLayoutUtil } from './constants/layout';
 import { Topbar } from './components/layout/Topbar';
 import { LeftSidebar } from './components/layout/LeftSidebar';
 import { RightSidebar } from './components/layout/RightSidebar';
@@ -27,6 +26,21 @@ import { getSnappedAbsTime as getSnappedAbsTimeUtil, getBmsPosFromAbsTime } from
 import { useTimeEditOperations } from './hooks/useTimeEditOperations';
 import { useBmsDiff } from './hooks/useBmsDiff';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { usePlaybackController } from './hooks/usePlaybackController';
+import {
+  RenderContext,
+  drawLaneBackgrounds,
+  drawMeasureLinesAndGrid,
+  drawTimeSelectionOverlay,
+  drawLongNoteBodies,
+  drawDraggingLongNotePreview,
+  drawNotes,
+  drawGhostNote,
+  drawSelectionBox,
+  drawPlaybackGuides,
+  drawHeaderSticky,
+  drawAutoscrollAnchor
+} from './utils/canvasRenderer';
 
 const MIN_SCROLL_Y = -120; // 0번 마디 밑부분 여백을 위해 마이너스 스크롤 허용
 
@@ -97,21 +111,14 @@ function App() {
     setIsHelpOpen(true);
   };
 
-  // Playback Refs
-  const timelineRef = useRef<any>(null);
-  const sortedNotesRef = useRef<any[]>([]);
-  const playedNoteIdsRef = useRef<Set<string>>(new Set());
-  const isPlayingRef = useRef(false);
-  const playStartRealTimeRef = useRef(0);
-  const playStartTimeOffsetRef = useRef(0);
-  const playbackSpeedRef = useRef(1.0);
-  const playStartScrollYRef = useRef(0);
+  // Playback Refs are now managed by usePlaybackController hook
 
   const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
   const [isGoToMeasureOpen, setIsGoToMeasureOpen] = useState(false);
   const [isBmsDiffOpen, setIsBmsDiffOpen] = useState(false);
   const [validationErrors, setValidationErrors] = useState<BmsValidationError[]>([]);
   const [isValidationErrorOpen, setIsValidationErrorOpen] = useState(false);
+  const saveForceRef = useRef<(() => void) | null>(null);
   const [isTimingValueModalOpen, setIsTimingValueModalOpen] = useState(false);
   const [timingModalChannel, setTimingModalChannel] = useState(0);
   const [timingModalDefaultValue, setTimingModalDefaultValue] = useState<number | undefined>(undefined);
@@ -160,116 +167,9 @@ function App() {
     resetDiff
   } = useBmsDiff(historyIndex);
 
-  // 새 파일 로드 시 엇갈림 검사 결과 자동 초기화
-  useEffect(() => {
-    resetDiff();
-  }, [fileName]);
 
-  // Sync playback refs
-  useEffect(() => {
-    isPlayingRef.current = isPlaying;
-  }, [isPlaying]);
 
   const currentSpeed = useEditorStore((state) => state.playbackSpeed);
-
-  useEffect(() => {
-    if (isPlayingRef.current) {
-      const actx = getAudioContext();
-      const now = actx.currentTime;
-      
-      // Calculate current elapsed time continuously
-      const elapsed = (now - playStartRealTimeRef.current) * playbackSpeedRef.current + playStartTimeOffsetRef.current;
-      
-      // Shift playback timeline offsets smoothly to prevent skips/stutters
-      playStartRealTimeRef.current = now;
-      playStartTimeOffsetRef.current = elapsed;
-      playbackSpeedRef.current = currentSpeed;
-      
-      // Update currently playing sound rates immediately
-      updateActiveSourcesPlaybackRate(currentSpeed);
-    } else {
-      playbackSpeedRef.current = currentSpeed;
-    }
-  }, [currentSpeed]);
-
-  // Recalculate timeline when bmsData changes
-  useEffect(() => {
-    if (bmsData) {
-      const timeline = calculateTimeline(bmsData);
-      timelineRef.current = timeline;
-      
-      const sorted = [...bmsData.notes]
-        .map(note => ({
-          ...note,
-          absoluteTime: timeline.noteTimeMap[note.id] ?? 0
-        }))
-        .sort((a, b) => a.absoluteTime - b.absoluteTime);
-      
-      sortedNotesRef.current = sorted;
-    } else {
-      timelineRef.current = null;
-      sortedNotesRef.current = [];
-    }
-    playedNoteIdsRef.current.clear();
-  }, [bmsData]);
-
-  // Handle Playback state transitions
-  useEffect(() => {
-    if (isPlaying) {
-      const actx = getAudioContext();
-      if (actx.state === 'suspended') {
-        actx.resume();
-      }
-      
-      let startOffset = 0;
-      if (playFromBeginning) {
-        startOffset = -0.5; // -0.5초 대기 시간
-        scrollY.current = MIN_SCROLL_Y;
-        requestRender();
-      } else {
-        // Calculate start offset from current scrollY
-        const currentMeasureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
-        const targetY = scrollY.current + 80; // Judgment line is at scrollY + 80
-        const absolutePosition = targetY / currentMeasureHeight;
-        
-        let targetMeasure = 0;
-        const currentMeasureOffsets = measureOffsetsRef.current;
-        while (targetMeasure < currentMeasureOffsets.offsets.length - 1 && currentMeasureOffsets.offsets[targetMeasure + 1] <= absolutePosition) {
-          targetMeasure++;
-        }
-        const measureStart = currentMeasureOffsets.offsets[targetMeasure];
-        const measureLen = bmsDataRef.current?.measureLengths?.[targetMeasure] ?? 1;
-        const position = (absolutePosition - measureStart) / measureLen;
-        
-        if (timelineRef.current) {
-          startOffset = timelineRef.current.positionToTime(targetMeasure, Math.max(0, Math.min(1, position)));
-        }
-      }
-      
-      playStartScrollYRef.current = scrollY.current; // Store scroll position where play started
-      playStartTimeOffsetRef.current = startOffset;
-      playStartRealTimeRef.current = -1; // Set flag to capture exact active frame time later
-      playedNoteIdsRef.current.clear();
-      
-      // Mark past notes as played so they don't trigger
-      const sorted = sortedNotesRef.current;
-      for (const note of sorted) {
-        if (note.absoluteTime < startOffset) {
-          playedNoteIdsRef.current.add(note.id);
-        }
-      }
-      
-      requestRender();
-    } else {
-      stopAllSounds();
-      const state = useEditorStore.getState();
-      if (state.isStopRequested) {
-        scrollY.current = playStartScrollYRef.current;
-        requestRender();
-        useEditorStore.setState({ isStopRequested: false }); // Reset flag
-      }
-    }
-  }, [isPlaying, playFromBeginning]);
 
   const isDirty = historyIndex !== lastSavedHistoryIndex;
 
@@ -304,97 +204,13 @@ function App() {
 
   const getActiveLayout = () => {
     const player = bmsDataRef.current?.header.player || 1;
-    const settings = viewSettingsRef.current;
-    const currentSettings = settingsRef.current;
-    
-    let layout = LAYOUT;
-    
-    if (player === 1) {
-      let singleLayout = LAYOUT.filter(l => !l.name.startsWith('D') && l.name !== 'S2');
-      if (currentSettings.scratchOnRight) {
-        // Deep copy objects to avoid modifying the static shared LAYOUT
-        singleLayout = singleLayout.map(l => ({ ...l }));
-        
-        // Find S1 and A7
-        const s1Index = singleLayout.findIndex(l => l.name === 'S1');
-        if (s1Index !== -1) {
-          const [s1] = singleLayout.splice(s1Index, 1);
-          const a7Index = singleLayout.findIndex(l => l.name === 'A7');
-          if (a7Index !== -1) {
-            singleLayout.splice(a7Index + 1, 0, {
-              ...s1,
-              isGroupEnd: true // S1 is now the end of the group
-            });
-            // Clear isGroupEnd from A7
-            const a7 = singleLayout.find(l => l.name === 'A7');
-            if (a7) a7.isGroupEnd = false;
-          }
-        }
-      }
-      layout = singleLayout;
-    }
-    
-    // Apply keyMode filtering based on dynamic specifications
-    layout = getFilteredLayout(keyModeRef.current, layout);
-    
-    // Dynamically preserve the visual vertical border between playable key lanes and BGM area
-    layout = layout.map(l => {
-      const isPlayableLane = l.type === 'channel' && l.channel !== undefined && (
-        (l.channel >= 0x11 && l.channel <= 0x19) || 
-        (l.channel >= 0x21 && l.channel <= 0x29)
-      );
-      if (isPlayableLane) {
-        return { ...l, isGroupEnd: false };
-      }
-      return l;
-    });
-
-    let lastPlayableIdx = -1;
-    for (let i = 0; i < layout.length; i++) {
-      const l = layout[i];
-      const isPlayableLane = l.type === 'channel' && l.channel !== undefined && (
-        (l.channel >= 0x11 && l.channel <= 0x19) || 
-        (l.channel >= 0x21 && l.channel <= 0x29)
-      );
-      if (isPlayableLane) {
-        lastPlayableIdx = i;
-      }
-    }
-
-    if (lastPlayableIdx !== -1) {
-      layout = layout.map((l, idx) => {
-        if (idx === lastPlayableIdx) {
-          return { ...l, isGroupEnd: true };
-        }
-        return l;
-      });
-    }
-    
-    // Scale lane widths by custom settings width (or static fallback)
-    const scaledLayout = layout.map(l => {
-      // generic BGM lanes share same 'B' setting width if defined
-      let laneKey = l.name;
-      if (l.type === 'bgm') {
-        laneKey = 'B';
-      }
-      const customConfig = currentSettings.customLaneColors[laneKey];
-      const baseWidth = (customConfig && customConfig.width !== undefined) 
-        ? customConfig.width 
-        : l.width;
-
-      return {
-        ...l,
-        width: baseWidth
-      };
-    });
-
-    return scaledLayout.filter(l => {
-      if (l.name === 'BPM') return settings.showBpm;
-      if (l.name === 'STOP') return settings.showStop;
-      if (l.name === 'SCR') return settings.showScroll;
-      if (l.name === 'BGA' || l.name === 'LYR' || l.name === 'POR') return settings.showBga;
-      return true;
-    });
+    return getActiveLayoutUtil(
+      player,
+      keyModeRef.current,
+      settingsRef.current.scratchOnRight,
+      settingsRef.current.customLaneColors,
+      viewSettingsRef.current
+    );
   };
 
   // Replaced with refs for performance:
@@ -507,7 +323,7 @@ function App() {
   useEffect(() => {
     const oldZoomY = prevZoomYRef.current;
     if (oldZoomY !== zoomY) {
-      const canvasHeight = canvasRef.current ? canvasRef.current.height : 600;
+      const canvasHeight = canvasRef.current ? canvasRef.current.clientHeight : 600;
       const centerY = canvasHeight / 2;
       const targetScrollY = (centerY + scrollY.current) * (zoomY / oldZoomY) - centerY;
       
@@ -631,41 +447,28 @@ function App() {
     const overlaps = new Set<string>();
     const notes = bmsData.notes;
     
-    const timeline = calculateTimeline(bmsData);
-    const timeMap = timeline.noteTimeMap;
-
-    // Sort notes by channel, then by absolute time to optimize
-    const sorted = [...notes].map(n => ({
-      ...n,
-      time: timeMap[n.id] ?? 0
-    })).sort((a, b) => {
+    // Sort notes by channel, then by measure and position
+    const sorted = [...notes].sort((a, b) => {
       if (a.channel !== b.channel) return a.channel - b.channel;
-      return a.time - b.time;
+      if (a.measure !== b.measure) return a.measure - b.measure;
+      return a.position - b.position;
     });
     
-    for (let i = 0; i < sorted.length; i++) {
+    for (let i = 0; i < sorted.length - 1; i++) {
       const a = sorted[i];
-      const isPlayable = (a.channel >= 0x11 && a.channel <= 0x19) || 
-                         (a.channel >= 0x21 && a.channel <= 0x29) || 
-                         (a.channel >= 0x51 && a.channel <= 0x59) || 
-                         (a.channel >= 0x61 && a.channel <= 0x69);
-      // 건반 연주 채널은 0.01초(10ms), 그 외 채널은 미세 오차(0.0001초) 겹침 판정 기준 적용
-      const threshold = isPlayable ? 0.01 : 0.0001;
-      const timeA = a.time;
+      const b = sorted[i + 1];
       
-      for (let j = i + 1; j < sorted.length; j++) {
-        const b = sorted[j];
-        if (a.channel !== b.channel) break; // Channels are sorted
+      if (a.channel === b.channel) {
+        // BGM 채널인 경우 가상 BGM 레이어(index % 100)가 동일할 때만 겹침으로 간주
+        if (a.channel === 0x01 && (a.index % 100) !== (b.index % 100)) {
+          continue;
+        }
         
-        const timeB = b.time;
-        if (timeB - timeA > threshold) break; // Exceeded threshold
-        
-        // For BGM, need to check visual lane
-        if (a.channel === 0x01 && (a.index % 100) !== (b.index % 100)) continue;
-        
-        // They overlap!
-        overlaps.add(a.id);
-        overlaps.add(b.id);
+        const isPerfectOverlap = a.measure === b.measure && Math.abs(a.position - b.position) < 1e-9;
+        if (isPerfectOverlap) {
+          overlaps.add(a.id);
+          overlaps.add(b.id);
+        }
       }
     }
     return overlaps;
@@ -711,9 +514,9 @@ function App() {
       for (let i = 0; i < notes.length - 1; i += 2) {
         const start = notes[i];
         const end = notes[i+1];
-        start.partnerId = end.id;
-        end.partnerId = start.id;
-        pairs.push({ start, end });
+        const startWithPartner = { ...start, partnerId: end.id };
+        const endWithPartner = { ...end, partnerId: start.id };
+        pairs.push({ start: startWithPartner, end: endWithPartner });
         visited.add(start.id);
         visited.add(end.id);
       }
@@ -740,9 +543,9 @@ function App() {
             if (n.value === lnObjVal && !visited.has(n.id)) {
               const startNote = notes[i-1];
               if (startNote.value !== lnObjVal && !visited.has(startNote.id)) {
-                startNote.partnerId = n.id;
-                n.partnerId = startNote.id;
-                pairs.push({ start: startNote, end: n });
+                const startNoteWithPartner = { ...startNote, partnerId: n.id };
+                const nWithPartner = { ...n, partnerId: startNote.id };
+                pairs.push({ start: startNoteWithPartner, end: nWithPartner });
                 visited.add(startNote.id);
                 visited.add(n.id);
               }
@@ -757,6 +560,37 @@ function App() {
 
   const measureOffsetsRef = useRef(measureOffsets);
   measureOffsetsRef.current = measureOffsets;
+
+  const {
+    timelineRef,
+    sortedNotesRef,
+    playedNoteIdsRef,
+    isPlayingRef,
+    playStartRealTimeRef,
+    playStartTimeOffsetRef,
+    playbackSpeedRef
+  } = usePlaybackController(
+    {
+      isPlaying,
+      playFromBeginning,
+      bmsData,
+      playbackSpeed: currentSpeed,
+      measureOffsets,
+      zoomY
+    },
+    {
+      scrollY,
+      requestRender
+    }
+  );
+  
+  // 새 파일 로드 시 엇갈림 검사 결과 자동 초기화 및 재생 즉시 정지, 0마디 이동
+  useEffect(() => {
+    resetDiff();
+    stopPlay();
+    scrollY.current = MIN_SCROLL_Y;
+    requestRender();
+  }, [fileName]);
   
   const overlappingNoteIdsRef = useRef(overlappingNoteIds);
   overlappingNoteIdsRef.current = overlappingNoteIds;
@@ -803,8 +637,9 @@ function App() {
     setRecentFiles,
     setBmsFilesToSelect,
     setIsBmsSelectionOpen,
-    onValidationError: (errors) => {
+    onValidationError: (errors, onSaveForce) => {
       setValidationErrors(errors);
+      saveForceRef.current = onSaveForce || null;
       setIsValidationErrorOpen(true);
     }
   });
@@ -834,10 +669,21 @@ function App() {
     // }
     renderRequested.current = false;
     try {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
+      const rawCanvas = canvasRef.current;
+      if (!rawCanvas) return;
+      const ctx = rawCanvas.getContext('2d');
       if (!ctx) return;
+
+      const dpr = window.devicePixelRatio || 1;
+      const canvas = {
+        width: rawCanvas.width / dpr,
+        height: rawCanvas.height / dpr,
+        style: rawCanvas.style,
+        getBoundingClientRect: () => rawCanvas.getBoundingClientRect()
+      } as unknown as HTMLCanvasElement;
+
+      ctx.save();
+      ctx.scale(dpr, dpr);
 
       const currentBmsData = bmsDataRef.current;
       const currentUseBase62 = useBase62Ref.current;
@@ -1019,586 +865,104 @@ function App() {
 
       const settings = viewSettingsRef.current;
 
-      // Draw left-most boundary line
-      if (settings.showVerticalLine) {
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(50, topY);
-        ctx.lineTo(50, bottomY);
-        ctx.strokeStyle = theme === 'light' 
-          ? `rgba(0,0,0,${currentSettings.verticalLineOpacity * 0.4})` 
-          : `rgba(255,255,255,${currentSettings.verticalLineOpacity})`;
-        ctx.stroke();
-      }
+      const rc: RenderContext = {
+        ctx,
+        canvas,
+        theme,
+        zoomedLayout,
+        currentZoomX,
+        currentZoomY,
+        currentSettings,
+        viewSettings: settings,
+        scrollY: scrollY.current,
+        scrollX: scrollX.current,
+        currentMeasureHeight,
+        topY,
+        bottomY,
+        measureOffsets: currentMeasureOffsets
+      };
 
-      // 1. Draw Lane Backgrounds and right-side borders
+      // 1. 레인 배경 그리기
+      drawLaneBackgrounds(rc);
+
       zoomedLayout.forEach((lane) => {
-        let laneKey = lane.name;
-        if (lane.type === 'bgm') {
-          laneKey = 'B';
-        }
-        
-        const customColors = settingsRef.current.customLaneColors || {};
-        const customColor = customColors[laneKey];
-        let laneColor = lane.color;
-        let bgAlpha = 1.0;
-
-        // 마디(MSR) 및 타이밍 레인(BPM, STOP, SCR)에 대해서만 사용자가 설정한 기저 배경색과 투명도를 적용합니다.
-        const isTimingOrMeasureLane = lane.type === 'measure' || lane.name === 'BPM' || lane.name === 'STOP' || lane.name === 'SCR';
-
-        if (customColor) {
-          // 배경색은 박스색(bg)과 같은 색상에 불투명도 15%로 통일 (특수 레인은 0%)
-          laneColor = customColor.gridBg ?? customColor.bg;
-          bgAlpha = customColor.gridBgAlpha ?? (isTimingOrMeasureLane ? 0.0 : 0.15);
-        } else {
-          // 테마에 구애받지 않고 극대화된 가독성을 선사하는 고정 다크 레인 기저 컬러 시스템 적용
-          if (lane.type === 'measure') {
-            laneColor = '#000000';
-            bgAlpha = 0.0;
-          } else if (lane.name === 'BPM' || lane.name === 'STOP' || lane.name === 'SCR') {
-            laneColor = '#000000';
-            bgAlpha = 0.0;
-          } else if (lane.name === 'BGA' || lane.name === 'LYR' || lane.name === 'POR') {
-            laneColor = '#10b981';
-            bgAlpha = 0.15;
-          } else if (lane.name === 'S1' || lane.name === 'S2') {
-            laneColor = '#ef4444';
-            bgAlpha = 0.15;
-          } else if (lane.type === 'bgm') {
-            laneColor = '#e4e4e7';
-            bgAlpha = 0.15;
-          } else {
-            // 건반 레인
-            bgAlpha = 0.15;
-            if (lane.color === '#1e40af') {
-              laneColor = '#1e40af';
-            } else {
-              laneColor = '#ffffff';
-            }
-          }
-        }
-
-        ctx.save();
-        ctx.globalAlpha = bgAlpha;
-        ctx.fillStyle = laneColor;
-        ctx.fillRect(currentX, topY, lane.width, canvas.height);
-        ctx.restore();
-        
         currentX += lane.width;
-
-        if (settings.showVerticalLine) {
-          ctx.beginPath();
-          ctx.moveTo(currentX, topY);
-          ctx.lineTo(currentX, bottomY);
-          
-          let strokeColor = '';
-          if (lane.isGroupEnd) {
-            strokeColor = theme === 'light'
-              ? `rgba(0, 0, 0, ${currentSettings.verticalLineOpacity * 0.4})`
-              : `rgba(255, 255, 255, ${currentSettings.verticalLineOpacity})`;
-          } else {
-            strokeColor = theme === 'light'
-              ? `rgba(0, 0, 0, ${currentSettings.subVerticalLineOpacity * 0.4})`
-              : `rgba(255, 255, 255, ${currentSettings.subVerticalLineOpacity})`;
-          }
-          
-          ctx.strokeStyle = strokeColor;
-          ctx.stroke();
-        }
       });
 
-      // 2. Draw Measure Lines
-      const maxMeasure = currentMeasureOffsets.maxM;
-      const totalMeasures = Math.max(maxMeasure, 100);
-      const totalHeight = currentMeasureOffsets.totalLen * currentMeasureHeight + 100;
+      // 2. 마디선 및 그리드 격자 그리기
+      drawMeasureLinesAndGrid(rc, currentBmsData, gridSnapRef.current, auxGridSnapRef.current, currentX);
 
-      // Update scroll bounds
+      // 2.3 시간 선택 영역 가이드 그리기 (F1 도구 전용)
+      drawTimeSelectionOverlay(
+        rc,
+        activeToolRef.current,
+        isTimeDragging.current,
+        timeDragStart.current,
+        timeDragCurrent.current,
+        timeSelection,
+        currentX
+      );
+
+      // 2.5 롱노트 연결 바 그리기
+      drawLongNoteBodies(rc, currentBmsData, currentLongNotePairs, selectedNotesRef.current);
+
+      // 2.6 작성 중인 롱노트 프리뷰 그리기
+      drawDraggingLongNotePreview(
+        rc,
+        currentBmsData,
+        isDrawingLongNote.current,
+        writeStartBmsPos.current,
+        writeCurrentBmsPos.current
+      );
+
+      // 3. 일반/롱노트 본체 그리기
+      drawNotes(rc, currentBmsData, selectedNotesRef.current, currentOverlapping, currentUseBase62, encodeBmsValue);
+
+      // 4. 작성 고스트 노트 그리기
+      drawGhostNote(
+        rc,
+        currentBmsData,
+        activeToolRef.current,
+        hoverBmsPos.current,
+        currentNoteValueRef.current,
+        currentUseBase62,
+        encodeBmsValue
+      );
+
+      // 4.5 올가미 다중선택 박스 그리기
+      drawSelectionBox(
+        rc,
+        isSelectingBox.current,
+        selectionBoxStart.current,
+        selectionBoxCurrent.current
+      );
+
+      ctx.restore(); // Translate 복원
+
+      // 5. 플레이 기준선(빨간 진행선) 그리기
+      drawPlaybackGuides(rc, currentX);
+
+      // 5.5 상단 열 이름 텍스트 그리기 (Sticky Header)
+      drawHeaderSticky(rc);
+
+      // 6. 스크롤바 그리기
+      const headerHeight = settings.showColumnHeader ? 24 : 0;
+      const totalHeight = currentMeasureOffsets.totalLen * currentMeasureHeight + 100;
       maxScrollXRef.current = Math.max(0, totalWidth - canvas.width);
       maxScrollYRef.current = Math.max(0, totalHeight - canvas.height);
-      
-      ctx.fillStyle = theme === 'light' ? '#3f3f46' : 'rgba(255,255,255,0.4)';
-      ctx.font = '10px Inter';
-      ctx.textAlign = 'center';
-
-      for (let m = 0; m <= totalMeasures; m++) {
-        const measureLen = currentBmsData?.measureLengths?.[m] ?? 1;
-        const y = -(currentMeasureOffsets.offsets[m] * currentMeasureHeight);
-        const yEnd = y - currentMeasureHeight * measureLen;
-        
-        if (y < topY - currentMeasureHeight || yEnd > bottomY + currentMeasureHeight) continue;
-
-        if (settings.showMeasureLine) {
-          ctx.strokeStyle = theme === 'light' 
-            ? `rgba(0, 0, 0, ${currentSettings.measureLineOpacity * 0.4})` 
-            : (theme === 'cyberpunk' ? `rgba(255, 0, 255, ${currentSettings.measureLineOpacity})` : `rgba(255, 255, 255, ${currentSettings.measureLineOpacity})`);
-          ctx.beginPath();
-          ctx.moveTo(50, y);
-          ctx.lineTo(currentX, y);
-          ctx.stroke();
-        }
-
-        const snap = gridSnapRef.current;
-        const auxSnap = auxGridSnapRef.current;
-
-        const lineMap = new Map<number, number>();
-
-        // 1. Aux grid lines (higher priority/brightness) - absolute snaps
-        const maxAux = Math.ceil(measureLen * auxSnap);
-        for (let j = 1; j < maxAux; j++) {
-          const ratio = j / auxSnap;
-          if (ratio >= measureLen - 1e-9) continue;
-          lineMap.set(ratio, 0.2); // Aux grid line opacity
-        }
-
-        // 2. Main grid lines (lower priority/brightness) - absolute snaps
-        const maxMain = Math.ceil(measureLen * snap);
-        for (let i = 1; i < maxMain; i++) {
-          const ratio = i / snap;
-          if (ratio >= measureLen - 1e-9) continue;
-          let exists = false;
-          for (const key of lineMap.keys()) {
-            if (Math.abs(key - ratio) < 1e-9) {
-              exists = true;
-              break;
-            }
-          }
-          if (!exists) {
-            lineMap.set(ratio, 0.08); // Main grid line opacity
-          }
-        }
-
-        // Draw unique lines
-        if (settings.showGrid || settings.showAuxGrid) {
-          const auxColor = currentSettings.auxGridColor;
-
-          lineMap.forEach((opacity, ratio) => {
-            const isAux = opacity === 0.2;
-            if (isAux && !settings.showAuxGrid) return;
-            if (!isAux && !settings.showGrid) return;
-
-            const lineY = y - currentMeasureHeight * ratio;
-            const targetOpacity = isAux ? currentSettings.auxGridOpacity : currentSettings.gridOpacity;
-            
-            let strokeColor = theme === 'light' 
-              ? `rgba(0, 0, 0, ${targetOpacity * 0.4})`
-              : `rgba(255, 255, 255, ${targetOpacity})`;
-
-            if (isAux) {
-              if (auxColor === 'green') strokeColor = `rgba(34, 197, 94, ${targetOpacity * (theme === 'light' ? 0.8 : 1.5)})`;
-              else if (auxColor === 'blue') strokeColor = `rgba(59, 130, 246, ${targetOpacity * (theme === 'light' ? 0.8 : 1.5)})`;
-              else if (auxColor === 'red') strokeColor = `rgba(239, 68, 68, ${targetOpacity * (theme === 'light' ? 0.8 : 1.5)})`;
-            }
-
-            ctx.strokeStyle = strokeColor;
-            ctx.beginPath();
-            ctx.moveTo(50, lineY);
-            ctx.lineTo(currentX, lineY);
-            ctx.stroke();
-          });
-        }
-
-        const measureLane = zoomedLayout.find(l => l.type === 'measure');
-        if (measureLane) {
-          if (settings.showMeasureLine) {
-            ctx.strokeStyle = theme === 'light' 
-              ? `rgba(0, 0, 0, ${currentSettings.measureLineOpacity * 0.4})` 
-              : `rgba(255, 255, 255, ${currentSettings.measureLineOpacity})`;
-            ctx.beginPath();
-            ctx.moveTo(50, y);
-            ctx.lineTo(50 + measureLane.width, y);
-            ctx.stroke();
-          }
-
-          if (settings.showMeasureNumber) {
-            ctx.fillStyle = theme === 'light' ? '#3f3f46' : '#a1a1aa';
-            ctx.font = '10px Inter';
-            ctx.textAlign = 'center';
-            ctx.fillText(m.toString(), 50 + measureLane.width / 2, y - 5);
-          }
-        }
-      }
-
-      // 2.3 Draw Time Edit Selection (F1 tool overlay)
-      if (activeToolRef.current === 'time') {
-        let selectionStart = null;
-        let selectionEnd = null;
-
-        if (isTimeDragging.current && timeDragStart.current !== null && timeDragCurrent.current !== null) {
-          selectionStart = Math.min(timeDragStart.current, timeDragCurrent.current);
-          selectionEnd = Math.max(timeDragStart.current, timeDragCurrent.current);
-        } else if (timeSelection) {
-          selectionStart = timeSelection.start;
-          selectionEnd = timeSelection.end;
-        }
-
-        if (selectionStart !== null && selectionEnd !== null) {
-          const yStart = -(selectionStart * currentMeasureHeight);
-          const yEnd = -(selectionEnd * currentMeasureHeight);
-          const yTop = Math.min(yStart, yEnd);
-          const yBottom = Math.max(yStart, yEnd);
-
-          ctx.save();
-          ctx.fillStyle = 'rgba(167, 139, 250, 0.18)'; // Premium elegant translucent violet
-          ctx.fillRect(50, yTop, currentX - 50, yBottom - yTop);
-
-          // Dot border styling
-          ctx.strokeStyle = '#a78bfa';
-          ctx.lineWidth = 1.5;
-          ctx.setLineDash([6, 4]);
-
-          ctx.beginPath();
-          ctx.moveTo(50, yStart);
-          ctx.lineTo(currentX, yStart);
-          ctx.stroke();
-
-          ctx.beginPath();
-          ctx.moveTo(50, yEnd);
-          ctx.lineTo(currentX, yEnd);
-          ctx.stroke();
-
-          ctx.restore();
-        }
-      }
-
-      // 2.5 Draw Long Note Bodies
-      if (currentBmsData && currentLongNotePairs.length > 0) {
-        currentLongNotePairs.forEach(pair => {
-          const { start, end } = pair;
-          const isSelected = selectedNotesRef.current.includes(start.id) || selectedNotesRef.current.includes(end.id);
-          
-          if (isSelected) {
-            ctx.fillStyle = 'rgba(239, 68, 68, 0.6)';
-          } else {
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-          }
-          
-          const startMeasureLen = currentBmsData.measureLengths[start.measure] ?? 1;
-          const endMeasureLen = currentBmsData.measureLengths[end.measure] ?? 1;
-          
-          const startY = -(currentMeasureOffsets.offsets[start.measure] + start.position * startMeasureLen) * currentMeasureHeight;
-          const endY = -(currentMeasureOffsets.offsets[end.measure] + end.position * endMeasureLen) * currentMeasureHeight;
-          
-          if (Math.min(startY, endY) > bottomY + 20 || Math.max(startY, endY) < topY - 20) return;
-
-          let targetLaneIndex = getTargetLaneIndex(zoomedLayout, start.channel, start.index);
-          if (targetLaneIndex !== -1) {
-            let laneX = 50;
-            for (let i = 0; i < targetLaneIndex; i++) laneX += zoomedLayout[i].width;
-            const lWidth = zoomedLayout[targetLaneIndex].width;
-            
-            const yTop = Math.min(startY, endY);
-            const yBottom = Math.max(startY, endY);
-            
-            ctx.fillRect(laneX + 1, yTop, lWidth - 2, yBottom - yTop);
-          }
-        });
-      }
-
-      // 2.6 Draw Dragging Long Note Preview (Write Mode)
-      if (isDrawingLongNote.current && writeStartBmsPos.current && writeCurrentBmsPos.current && currentBmsData) {
-        const start = writeStartBmsPos.current;
-        const end = writeCurrentBmsPos.current;
-
-        const startMeasureLen = currentBmsData.measureLengths[start.measure] ?? 1;
-        const endMeasureLen = currentBmsData.measureLengths[end.measure] ?? 1;
-
-        const startAbsolutePos = currentMeasureOffsets.offsets[start.measure] + start.position * startMeasureLen;
-        const endAbsolutePos = currentMeasureOffsets.offsets[end.measure] + end.position * endMeasureLen;
-
-        const startY = -startAbsolutePos * currentMeasureHeight;
-        const endY = -endAbsolutePos * currentMeasureHeight;
-
-        let targetLaneIndex = getTargetLaneIndex(zoomedLayout, start.channel, start.index);
-        if (targetLaneIndex !== -1) {
-          let laneX = 50;
-          for (let i = 0; i < targetLaneIndex; i++) laneX += zoomedLayout[i].width;
-          const lWidth = zoomedLayout[targetLaneIndex].width;
-
-          const yTop = Math.min(startY, endY);
-          const yBottom = Math.max(startY, endY);
-
-          // 드래그 중인 롱노트 몸통 프리뷰는 반투명한 노란색
-          ctx.fillStyle = 'rgba(234, 179, 8, 0.4)';
-          ctx.fillRect(laneX + 1, yTop, lWidth - 2, yBottom - yTop);
-
-          // 머리/꼬리 임시 박스
-          const noteHeight = settingsRef.current.noteHeight ?? 12;
-          ctx.fillStyle = 'rgba(234, 179, 8, 0.7)';
-          ctx.fillRect(laneX + 2, yTop - noteHeight, lWidth - 4, noteHeight);
-          ctx.fillRect(laneX + 2, yBottom - noteHeight, lWidth - 4, noteHeight);
-        }
-      }
-
-      // 3. Draw Notes
-      if (currentBmsData) {
-        currentBmsData.notes.forEach(note => {
-          const measureLen = currentBmsData.measureLengths[note.measure] ?? 1;
-          const y = -(currentMeasureOffsets.offsets[note.measure] + note.position * measureLen) * currentMeasureHeight;
-          
-          if (y < topY - 20 || y > bottomY + 20) return;
-
-          let targetLaneIndex = getTargetLaneIndex(zoomedLayout, note.channel, note.index);
-
-          if (targetLaneIndex !== -1) {
-            let laneX = 50;
-            for (let i = 0; i < targetLaneIndex; i++) laneX += zoomedLayout[i].width;
-            const lWidth = zoomedLayout[targetLaneIndex].width;
-            
-            // Align UP from the measure line. Y goes UP in canvas logic (negative).
-            const currentSettings = settingsRef.current;
-            const noteHeight = currentSettings.noteHeight ?? 12;
-            const noteY = y - noteHeight; // Draw upwards from the baseline
-
-            const noteSkin = currentSettings.noteSkin;
-            const isSelected = selectedNotesRef.current.includes(note.id);
-            const isOverlapping = currentOverlapping.has(note.id);
-            
-            const isInvisible = (note.channel >= 0x31 && note.channel <= 0x39) || (note.channel >= 0x41 && note.channel <= 0x49);
-            const isMine = (note.channel >= 0xD1 && note.channel <= 0xD9) || (note.channel >= 0xE1 && note.channel <= 0xE9);
-            
-            let laneKey = '';
-            if (targetLaneIndex !== -1) {
-              const lane = zoomedLayout[targetLaneIndex];
-              if (lane.type === 'bgm') {
-                laneKey = 'B';
-              } else {
-                laneKey = lane.name;
-              }
-            }
-            const customColors = currentSettings.customLaneColors || {};
-            const laneColor = customColors[laneKey] || { bg: '#f4f4f5', bgAlpha: 1.0, fg: '#000000', fgAlpha: 1.0 };
-
-            let baseColor = laneColor.bg;
-            let baseAlpha = laneColor.bgAlpha ?? 1.0;
-            let borderColor = '#000000';
-            let textColor = laneColor.fg;
-            let textAlpha = laneColor.fgAlpha ?? 1.0;
-            
-            if (isOverlapping) {
-              const overlapColor = customColors['OVERLAP'] || { bg: '#ffffaa', bgAlpha: 1.0, fg: '#bbbb00', fgAlpha: 1.0 };
-              baseColor = overlapColor.bg;
-              baseAlpha = overlapColor.bgAlpha ?? 1.0;
-              borderColor = overlapColor.fg;
-              textColor = overlapColor.fg;
-              textAlpha = overlapColor.fgAlpha ?? 1.0;
-            } else if (isSelected) {
-              const selectColor = customColors['SELECT'] || { bg: '#ffaaaa', bgAlpha: 1.0, fg: '#ff0000', fgAlpha: 1.0 };
-              baseColor = selectColor.bg;
-              baseAlpha = selectColor.bgAlpha ?? 1.0;
-              borderColor = selectColor.fg;
-              textColor = selectColor.fg;
-              textAlpha = selectColor.fgAlpha ?? 1.0;
-            } else if (isMine) {
-              const mineColor = customColors['MINE'] || { bg: '#991b1b', bgAlpha: 1.0, fg: '#ffffff', fgAlpha: 1.0 };
-              baseColor = mineColor.bg;
-              baseAlpha = mineColor.bgAlpha ?? 1.0;
-              borderColor = '#7f1d1d';
-              textColor = mineColor.fg;
-              textAlpha = mineColor.fgAlpha ?? 1.0;
-            } else if (isInvisible) {
-              const invColor = customColors['INV'] || { bg: '#f4f4f5', bgAlpha: 0.4, fg: '#000000', fgAlpha: 0.4 };
-              baseColor = invColor.bg;
-              baseAlpha = invColor.bgAlpha ?? 0.4;
-              textColor = invColor.fg;
-              textAlpha = invColor.fgAlpha ?? 0.4;
-            }
-
-            ctx.save();
-            ctx.globalAlpha = baseAlpha;
-
-            ctx.fillStyle = baseColor;
-            ctx.strokeStyle = borderColor;
-
-            if (noteSkin === 'gradient') {
-              ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
-              const grad = ctx.createLinearGradient(laneX, noteY, laneX, noteY + noteHeight);
-              grad.addColorStop(0, 'rgba(255, 255, 255, 0.4)');
-              grad.addColorStop(1, 'rgba(0, 0, 0, 0.2)');
-              ctx.fillStyle = grad;
-              ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
-              ctx.strokeRect(laneX + 1, noteY, lWidth - 2, noteHeight);
-            } else if (noteSkin === '3d') {
-              ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
-              
-              // Draw top bevel white highlights
-              ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-              ctx.fillRect(laneX + 1, noteY, lWidth - 2, 2);
-              ctx.fillRect(laneX + 1, noteY, 2, noteHeight);
-              
-              // Draw bottom bevel dark shadows
-              ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-              ctx.fillRect(laneX + 1, noteY + noteHeight - 2, lWidth - 2, 2);
-              ctx.fillRect(laneX + lWidth - 3, noteY, 2, noteHeight);
-              
-              ctx.strokeRect(laneX + 1, noteY, lWidth - 2, noteHeight);
-            } else {
-              ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
-              ctx.strokeRect(laneX + 1, noteY, lWidth - 2, noteHeight);
-            }
-            
-            ctx.globalAlpha = textAlpha;
-            ctx.fillStyle = textColor;
-            ctx.font = `${currentSettings.fontSize ?? 10}px Inter`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            
-            let displayText = encodeBmsValue(note.value, currentUseBase62);
-            if (currentSettings.showKeySoundFileName && currentBmsData.wavs[note.value]) {
-              const fullWav = currentBmsData.wavs[note.value];
-              const baseWav = fullWav.split('.')[0] || fullWav;
-              displayText = baseWav.length > 5 ? baseWav.substring(0, 5) : baseWav;
-            } else if (note.channel === 0x03) {
-              displayText = note.value.toString();
-            } else if (note.channel === 0x08) {
-              const bpmVal = currentBmsData.bpms[note.value];
-              if (bpmVal !== undefined) displayText = bpmVal.toString();
-            } else if (note.channel === 0x09) {
-              const stopVal = currentBmsData.stops[note.value];
-              if (stopVal !== undefined) displayText = stopVal.toString();
-            } else if (note.channel === 256) {
-              const scrollVal = currentBmsData.scrolls[note.value];
-              if (scrollVal !== undefined) displayText = scrollVal.toString();
-            }
-            ctx.fillText(displayText, laneX + lWidth / 2, noteY + noteHeight / 2);
-            
-            ctx.restore();
-          }
-        });
-      }
-
-      // 4. Draw Ghost Note
-      const currentActiveTool = activeToolRef.current;
-      const hoverPos = hoverBmsPos.current;
-      if (currentActiveTool === 'write' && hoverPos) {
-        const measureLen = currentBmsData?.measureLengths[hoverPos.measure] ?? 1;
-        const y = -(currentMeasureOffsets.offsets[hoverPos.measure] + hoverPos.position * measureLen) * currentMeasureHeight;
-        
-        let laneX = 50;
-        let found = false;
-        let lWidth = 0;
-        for (const lane of zoomedLayout) {
-          if (lane.name === hoverPos.lane.name) {
-            found = true;
-            lWidth = lane.width;
-            break;
-          }
-          laneX += lane.width;
-        }
-
-        if (found) {
-          const noteHeight = settingsRef.current.noteHeight ?? 12;
-          const noteY = y - noteHeight;
-          
-          let laneKey = '';
-          if (hoverPos.lane.type === 'bgm') {
-            laneKey = 'B';
-          } else {
-            laneKey = hoverPos.lane.name;
-          }
-          const customColors = settingsRef.current.customLaneColors || {};
-          const laneColor = customColors[laneKey] || { bg: '#f4f4f5', bgAlpha: 1.0, fg: '#000000', fgAlpha: 1.0 };
-
-          ctx.save();
-          ctx.globalAlpha = (laneColor.bgAlpha ?? 1.0) * 0.5;
-          ctx.fillStyle = laneColor.bg;
-          ctx.fillRect(laneX + 1, noteY, lWidth - 2, noteHeight);
-          ctx.strokeStyle = '#ff0000';
-          ctx.strokeRect(laneX + 1, noteY, lWidth - 2, noteHeight);
-          
-          // Draw the current note value on the ghost note
-          const currentNoteVal = currentNoteValueRef.current;
-          let displayText = encodeBmsValue(currentNoteVal, currentUseBase62);
-          ctx.globalAlpha = (laneColor.fgAlpha ?? 1.0) * 0.5;
-          ctx.fillStyle = laneColor.fg;
-          ctx.font = `${settingsRef.current.fontSize ?? 10}px Inter`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(displayText, laneX + lWidth / 2, noteY + noteHeight / 2);
-          ctx.restore();
-        }
-      }
-
-      // Draw Selection Box
-      if (isSelectingBox.current && selectionBoxStart.current && selectionBoxCurrent.current) {
-        const sx = selectionBoxStart.current.x;
-        const sy = selectionBoxStart.current.y;
-        const cx = selectionBoxCurrent.current.x;
-        const cy = selectionBoxCurrent.current.y;
-        
-        ctx.save();
-        ctx.fillStyle = 'rgba(100, 150, 255, 0.2)';
-        ctx.fillRect(Math.min(sx, cx), Math.min(sy, cy), Math.abs(cx - sx), Math.abs(cy - sy));
-        ctx.strokeStyle = 'rgba(100, 150, 255, 0.8)';
-        ctx.strokeRect(Math.min(sx, cx), Math.min(sy, cy), Math.abs(cx - sx), Math.abs(cy - sy));
-        ctx.restore();
-      }
-
-      // 4. Draw Header Background (Sticky Top)
-      ctx.restore();
-
-      // 3.5 Draw Red Judgment Line (Red line)
-      ctx.save();
-      ctx.strokeStyle = '#ef4444'; // Red-500
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      
-      const judgmentLineStartX = Math.max(50, 50 - scrollX.current);
-      const judgmentLineEndX = Math.min(canvas.width, currentX - scrollX.current);
-      
-      if (judgmentLineStartX < judgmentLineEndX) {
-        ctx.moveTo(judgmentLineStartX, canvas.height - 80);
-        ctx.lineTo(judgmentLineEndX, canvas.height - 80);
-        ctx.stroke();
-      }
-      ctx.restore();
-
-      const headerHeight = settings.showColumnHeader ? 24 : 0;
-
-      if (settings.showColumnHeader) {
-        ctx.save();
-        ctx.translate(-scrollX.current, 0); // Top sticky area
-        
-        ctx.fillStyle = 'rgba(10, 10, 12, 0.9)';
-        ctx.fillRect(scrollX.current, 0, canvas.width + scrollX.current, 24);
-        
-        // Header Bottom Border
-        ctx.strokeStyle = '#333333';
-        ctx.beginPath();
-        ctx.moveTo(scrollX.current, 24);
-        ctx.lineTo(canvas.width + scrollX.current, 24);
-        ctx.stroke();
-
-        let headerX = 50;
-        ctx.fillStyle = '#a1a1aa';
-        ctx.font = '10px Inter';
-        ctx.textAlign = 'center';
-        
-        zoomedLayout.forEach((lane) => {
-          ctx.fillText(lane.name, headerX + lane.width / 2, 16);
-          headerX += lane.width;
-        });
-        ctx.restore();
-      }
-      
-      // 5. Draw Visual Scrollbars
-      ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset to screen coordinates
 
       const maxScrollY = maxScrollYRef.current;
       const maxScrollX = maxScrollXRef.current;
 
-      // Vertical Scrollbar
+      // 세로 스크롤바 계산 및 드로잉
       if (maxScrollY > MIN_SCROLL_Y) {
         const scrollbarWidth = 10;
-        const trackHeight = canvas.height - headerHeight; // Below top header (if visible)
+        const trackHeight = canvas.height - headerHeight;
         const viewRatio = Math.min(1, canvas.height / (totalHeight - MIN_SCROLL_Y));
         const thumbHeight = Math.max(30, trackHeight * viewRatio);
-        
-        // In our coordinate system, scrollY = MIN_SCROLL_Y is bottom (measure 0 bottom padding).
-        // Thumb should be at the bottom when scrollY = MIN_SCROLL_Y.
         const scrollRange = maxScrollY - MIN_SCROLL_Y;
         const scrollRatio = scrollRange > 0 ? (scrollY.current - MIN_SCROLL_Y) / scrollRange : 0;
         const thumbY = headerHeight + (1 - scrollRatio) * (trackHeight - thumbHeight);
-
         const rectX = canvas.width - scrollbarWidth + 2;
         vThumbRect.current = { x: rectX, y: thumbY, w: scrollbarWidth - 4, h: thumbHeight };
 
@@ -1617,16 +981,14 @@ function App() {
         vThumbRect.current = { x: 0, y: 0, w: 0, h: 0 };
       }
 
-      // Horizontal Scrollbar
+      // 가로 스크롤바 계산 및 드로잉
       if (maxScrollX > 0) {
         const scrollbarHeight = 10;
         const trackWidth = canvas.width - (maxScrollY > 0 ? 10 : 0);
         const viewRatio = Math.min(1, canvas.width / totalWidth);
         const thumbWidth = Math.max(30, trackWidth * viewRatio);
-        
         const scrollRatio = scrollX.current / maxScrollX;
         const thumbX = scrollRatio * (trackWidth - thumbWidth);
-
         const rectY = canvas.height - scrollbarHeight + 2;
         hThumbRect.current = { x: thumbX, y: rectY, w: thumbWidth, h: scrollbarHeight - 4 };
 
@@ -1645,56 +1007,17 @@ function App() {
         hThumbRect.current = { x: 0, y: 0, w: 0, h: 0 };
       }
 
-      // Autoscroll visual anchor and arrow guide drawing
-      if (isAutoscrolling.current && autoscrollAnchor.current && canvasRef.current) {
-        const rect = canvasRef.current.getBoundingClientRect();
-        const anchorX = autoscrollAnchor.current.x - rect.left;
-        const anchorY = autoscrollAnchor.current.y - rect.top;
+      // 7. 오토스크롤 앵커 및 화살표 그리기
+      drawAutoscrollAnchor(
+        rc,
+        canvasRef,
+        isAutoscrolling.current,
+        autoscrollAnchor.current,
+        autoscrollCurrent.current,
+        dpr
+      );
 
-        ctx.save();
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-
-        // 1. Semi-transparent outer ring guide
-        ctx.beginPath();
-        ctx.arc(anchorX, anchorY, 16, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
-        ctx.stroke();
-
-        // 2. Central anchor dot
-        ctx.beginPath();
-        ctx.arc(anchorX, anchorY, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-        ctx.fill();
-
-        // 3. Dynamic arrow guide line to current mouse position
-        if (autoscrollCurrent.current) {
-          const curX = autoscrollCurrent.current.x - rect.left;
-          const curY = autoscrollCurrent.current.y - rect.top;
-          const dx = curX - anchorX;
-          const dy = curY - anchorY;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-
-          if (dist > 15) {
-            ctx.beginPath();
-            ctx.moveTo(anchorX, anchorY);
-            ctx.lineTo(curX, curY);
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([3, 3]);
-            ctx.stroke();
-
-            ctx.beginPath();
-            ctx.arc(curX, curY, 3.5, 0, Math.PI * 2);
-            ctx.fillStyle = '#ff007f'; // Vivid neon rose
-            ctx.fill();
-          }
-        }
-        ctx.restore();
-      }
-
+      ctx.restore(); // Scale 복원
       ctx.restore();
     } catch (e) {
       console.error("Render Error:", e);
@@ -1714,8 +1037,13 @@ function App() {
     if (!canvas || !container) return;
 
     const resizeCanvas = () => {
-      canvas.width = container.clientWidth;
-      canvas.height = container.clientHeight;
+      const dpr = window.devicePixelRatio || 1;
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
       requestRender();
     };
 
@@ -1978,7 +1306,7 @@ function App() {
       if (isDraggingV.current) {
         const deltaY = e.clientY - dragStartY.current;
         const headerHeight = viewSettingsRef.current.showColumnHeader ? 24 : 0;
-        const trackHeight = canvas.height - headerHeight;
+        const trackHeight = canvas.clientHeight - headerHeight;
         const vRect = vThumbRect.current;
         const draggableRange = trackHeight - vRect.h;
         if (draggableRange > 0) {
@@ -1992,7 +1320,7 @@ function App() {
 
       if (isDraggingH.current) {
         const deltaX = e.clientX - dragStartX.current;
-        const trackWidth = canvas.width - (maxScrollYRef.current > 0 ? 10 : 0);
+        const trackWidth = canvas.clientWidth - (maxScrollYRef.current > 0 ? 10 : 0);
         const hRect = hThumbRect.current;
         const draggableRange = trackWidth - hRect.w;
         if (draggableRange > 0) {
@@ -2009,7 +1337,7 @@ function App() {
       lastMouseCoords.current = { x, y };
 
       if (isTimeDragging.current && timeDragStart.current !== null) {
-        const originY = canvas.height + scrollY.current;
+        const originY = canvas.clientHeight + scrollY.current;
         const ctxY = y - originY;
         const measureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
         const absolutePosition = -ctxY / measureHeight;
@@ -2033,18 +1361,19 @@ function App() {
       }
 
       if (isResizingLongNote.current && resizeTargetNoteId.current && bmsDataRef.current) {
-        const originY = canvas.height + scrollY.current;
+        const originY = canvas.clientHeight + scrollY.current;
         const ctxY = y - originY;
         const measureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
         const absolutePosition = -ctxY / measureHeight;
         
         const targetAbsTime = absolutePosition - resizeOffsetAbs.current;
         
+        const currentOffsets = measureOffsetsRef.current;
         let targetMeasure = 0;
-        while (targetMeasure < measureOffsets.offsets.length - 1 && measureOffsets.offsets[targetMeasure + 1] <= targetAbsTime) {
+        while (targetMeasure < currentOffsets.offsets.length - 1 && currentOffsets.offsets[targetMeasure + 1] <= targetAbsTime) {
           targetMeasure++;
         }
-        const measureStart = measureOffsets.offsets[targetMeasure];
+        const measureStart = currentOffsets.offsets[targetMeasure];
         const measureLen = bmsDataRef.current.measureLengths?.[targetMeasure] ?? 1;
         
         let offsetVal = targetAbsTime - measureStart;
@@ -2107,11 +1436,12 @@ function App() {
         const measureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
         const absolutePosition = -ctxY / measureHeight;
         
+        const currentOffsets = measureOffsetsRef.current;
         let targetMeasure = 0;
-        while (targetMeasure < measureOffsets.offsets.length - 1 && measureOffsets.offsets[targetMeasure + 1] <= absolutePosition) {
+        while (targetMeasure < currentOffsets.offsets.length - 1 && currentOffsets.offsets[targetMeasure + 1] <= absolutePosition) {
           targetMeasure++;
         }
-        const measureStart = measureOffsets.offsets[targetMeasure];
+        const measureStart = currentOffsets.offsets[targetMeasure];
         const measureLen = bmsDataRef.current?.measureLengths?.[targetMeasure] ?? 1;
         const offsetVal = absolutePosition - measureStart;
         
@@ -2452,7 +1782,7 @@ function App() {
             }
           ]);
           commitHistory();
-          playPreviewSound(currentNoteValueRef.current);
+          playPreviewSound(startValue);
         }
 
         writeStartBmsPos.current = null;
@@ -2574,7 +1904,7 @@ function App() {
   const getBmsPosition = (x: number, y: number) => {
     if (viewSettingsRef.current.showColumnHeader && y < 24) return null;
     const ctxX = x + scrollX.current;
-    const originY = canvasRef.current!.height + scrollY.current;
+    const originY = canvasRef.current!.clientHeight + scrollY.current;
     const ctxY = y - originY;
     
     let currentX = 50;
@@ -2595,12 +1925,13 @@ function App() {
     const measureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
     const absolutePosition = -ctxY / measureHeight; // This is the cumulative length
     
+    const currentOffsets = measureOffsetsRef.current;
     let targetMeasure = 0;
-    while (targetMeasure < measureOffsets.offsets.length - 1 && measureOffsets.offsets[targetMeasure + 1] <= absolutePosition) {
+    while (targetMeasure < currentOffsets.offsets.length - 1 && currentOffsets.offsets[targetMeasure + 1] <= absolutePosition) {
       targetMeasure++;
     }
     
-    const measureStart = measureOffsets.offsets[targetMeasure];
+    const measureStart = currentOffsets.offsets[targetMeasure];
     const measureLen = bmsDataRef.current?.measureLengths?.[targetMeasure] ?? 1;
     const offsetVal = absolutePosition - measureStart;
     
@@ -2691,7 +2022,7 @@ function App() {
     if (!bmsDataRef.current) return;
 
     if (activeToolRef.current === 'time') {
-      const originY = canvasRef.current!.height + scrollY.current;
+      const originY = canvasRef.current!.clientHeight + scrollY.current;
       const ctxY = y - originY;
       const measureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
       const absolutePosition = -ctxY / measureHeight;
@@ -2712,12 +2043,13 @@ function App() {
       const currentMeasureHeight = BASE_MEASURE_HEIGHT * zoomYRef.current;
       const currentMeasureOffsets = measureOffsetsRef.current;
       const zoomedLayout = getActiveLayout().map(l => ({ ...l, width: l.width * zoomXRef.current }));
-      const canvasHeight = canvasRef.current!.height;
+      const canvasHeight = canvasRef.current!.clientHeight;
       const worldX = mouseX + scrollX.current;
       const worldY = mouseY - (canvasHeight + scrollY.current);
       
       const notes = bmsDataRef.current.notes;
       const noteHeight = settingsRef.current.noteHeight ?? 12;
+      const currentLongNotePairs = longNotePairsRef.current || [];
 
       for (let i = notes.length - 1; i >= 0; i--) {
         const note = notes[i];
@@ -2741,12 +2073,16 @@ function App() {
         const noteY = yVal - noteHeight;
 
         if (worldY >= noteY && worldY <= noteY + noteHeight) {
+          const paired = currentLongNotePairs.find(p => p.start.id === note.id || p.end.id === note.id);
+          if (paired) {
+            const matchedNote = paired.start.id === note.id ? paired.start : paired.end;
+            return { note: matchedNote };
+          }
           return { note };
         }
       }
 
       // 롱노트 몸통(Body) 검출
-      const currentLongNotePairs = longNotePairsRef.current || [];
       for (let i = currentLongNotePairs.length - 1; i >= 0; i--) {
         const pair = currentLongNotePairs[i];
         const { start, end } = pair;
@@ -3483,6 +2819,7 @@ function App() {
     isOpen={true}
     onClose={() => setIsValidationErrorOpen(false)}
     errors={validationErrors}
+    onSaveForce={saveForceRef.current || undefined}
     onGoToMeasure={(measure) => {
       const currentMeasureOffsets = measureOffsetsRef.current;
       const measureOffset = currentMeasureOffsets.offsets[measure];

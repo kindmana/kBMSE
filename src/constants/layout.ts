@@ -103,3 +103,92 @@ export const getFilteredLayout = (keyMode: KeyMode, layout: LaneConfig[]): LaneC
   const hidden = HIDDEN_LANES[keyMode] || [];
   return layout.filter(l => !hidden.includes(l.name));
 };
+
+export const getActiveLayout = (
+  player: number,
+  keyMode: KeyMode,
+  scratchOnRight: boolean,
+  customLaneColors: any,
+  viewSettings: any
+): LaneConfig[] => {
+  let layout = LAYOUT;
+  
+  if (player === 1) {
+    let singleLayout = LAYOUT.filter(l => !l.name.startsWith('D') && l.name !== 'S2');
+    if (scratchOnRight) {
+      singleLayout = singleLayout.map(l => ({ ...l }));
+      const s1Index = singleLayout.findIndex(l => l.name === 'S1');
+      if (s1Index !== -1) {
+        const [s1] = singleLayout.splice(s1Index, 1);
+        const a7Index = singleLayout.findIndex(l => l.name === 'A7');
+        if (a7Index !== -1) {
+          singleLayout.splice(a7Index + 1, 0, {
+            ...s1,
+            isGroupEnd: true
+          });
+          const a7 = singleLayout.find(l => l.name === 'A7');
+          if (a7) a7.isGroupEnd = false;
+        }
+      }
+    }
+    layout = singleLayout;
+  }
+  
+  layout = getFilteredLayout(keyMode, layout);
+  
+  layout = layout.map(l => {
+    const isPlayableLane = l.type === 'channel' && l.channel !== undefined && (
+      (l.channel >= 0x11 && l.channel <= 0x19) || 
+      (l.channel >= 0x21 && l.channel <= 0x29)
+    );
+    if (isPlayableLane) {
+      return { ...l, isGroupEnd: false };
+    }
+    return l;
+  });
+
+  let lastPlayableIdx = -1;
+  for (let i = 0; i < layout.length; i++) {
+    const l = layout[i];
+    const isPlayableLane = l.type === 'channel' && l.channel !== undefined && (
+      (l.channel >= 0x11 && l.channel <= 0x19) || 
+      (l.channel >= 0x21 && l.channel <= 0x29)
+    );
+    if (isPlayableLane) {
+      lastPlayableIdx = i;
+    }
+  }
+
+  if (lastPlayableIdx !== -1) {
+    layout = layout.map((l, idx) => {
+      if (idx === lastPlayableIdx) {
+        return { ...l, isGroupEnd: true };
+      }
+      return l;
+    });
+  }
+  
+  const scaledLayout = layout.map(l => {
+    let laneKey = l.name;
+    if (l.type === 'bgm') {
+      laneKey = 'B';
+    }
+    const customConfig = customLaneColors?.[laneKey];
+    const baseWidth = (customConfig && customConfig.width !== undefined) 
+      ? customConfig.width 
+      : l.width;
+
+    return {
+      ...l,
+      width: baseWidth
+    };
+  });
+
+  return scaledLayout.filter(l => {
+    if (l.name === 'BPM') return viewSettings.showBpm;
+    if (l.name === 'STOP') return viewSettings.showStop;
+    if (l.name === 'SCR') return viewSettings.showScroll;
+    if (l.name === 'BGA' || l.name === 'LYR' || l.name === 'POR') return viewSettings.showBga;
+    return true;
+  });
+};

@@ -3,6 +3,27 @@ import { BmsData, BmsNote, decodeBmsValue } from '../parser/bmsParser';
 import { stopAllSounds, getAudioContext } from '../utils/audioPlayer';
 import { KeyMode, HIDDEN_LANES } from '../constants/layout';
 
+export const createDefaultBmsData = (): BmsData => ({
+  header: {
+    title: "",
+    artist: "",
+    genre: "",
+    bpm: 120,
+    player: 1,
+    rank: 3,
+    playLevel: "1",
+    total: 160
+  },
+  notes: [],
+  wavs: {},
+  bmps: {},
+  bpms: {},
+  stops: {},
+  scrolls: {},
+  measureLengths: {},
+  expansion: ""
+});
+
 export interface HistoryEntry {
   notes: BmsNote[];
   keyMode: KeyMode;
@@ -502,8 +523,8 @@ export const useEditorStore = create<EditorState>((set) => ({
         base62Update = { useBase62: 36 };
       } else if (updates.base62Mode === '62') {
         base62Update = { useBase62: 62 };
-      } else if (updates.base62Mode === 'auto' && state.rawBmsContent) {
-        base62Update = { useBase62: detectBase62Needed(state.rawBmsContent) ? 62 : 36 };
+      } else if (updates.base62Mode === 'auto') {
+        base62Update = { useBase62: detectBase62Needed(state.rawBmsContent || '') ? 62 : 36 };
       }
     }
 
@@ -523,7 +544,7 @@ export const useEditorStore = create<EditorState>((set) => ({
     };
   }),
 
-  useBase62: 62, // Default to base 62
+  useBase62: 36, // Default to base 36
   setUseBase62: (val) => set({ useBase62: val }),
   
   lockVerticalPosition: getInitialLockVerticalPosition(),
@@ -590,12 +611,24 @@ export const useEditorStore = create<EditorState>((set) => ({
   fileHandle: null,
   setFileHandle: (handle) => set({ fileHandle: handle }),
   
-  bmsData: null,
+  bmsData: createDefaultBmsData(),
   setBmsData: (data, fileName) => set(() => {
     if (!data) {
+      const defaultBms = createDefaultBmsData();
       return {
-        bmsData: null,
-        history: [],
+        bmsData: defaultBms,
+        history: [{
+          notes: defaultBms.notes,
+          keyMode: '7K1S',
+          expansion: defaultBms.expansion || '',
+          player: defaultBms.header.player || 1,
+          measureLengths: { ...defaultBms.measureLengths },
+          stops: { ...defaultBms.stops },
+          bpms: { ...defaultBms.bpms },
+          header: { ...defaultBms.header },
+          wavs: { ...defaultBms.wavs },
+          bmps: { ...defaultBms.bmps }
+        }],
         historyIndex: 0,
         lastSavedHistoryIndex: 0,
         selectedNotes: [],

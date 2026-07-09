@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useEditorStore, detectBase62Needed } from '../store/editorStore';
+import { useEditorStore, detectBase62Needed, createDefaultBmsData } from '../store/editorStore';
 import { parseBms, BmsData, encodeBms } from '../parser/bmsParser';
 import { validateBmsData, BmsValidationError } from '../utils/bmsValidator';
 import { getRecentFiles, addRecentFile, loadRecentFileHandle, RecentFile, verifyPermission } from '../utils/fileSystem';
@@ -26,7 +26,7 @@ interface FileOperationsOptions {
   setRecentFiles: (files: RecentFile[]) => void;
   setBmsFilesToSelect: (files: File[]) => void;
   setIsBmsSelectionOpen: (open: boolean) => void;
-  onValidationError?: (errors: BmsValidationError[]) => void;
+  onValidationError?: (errors: BmsValidationError[], onSaveForce?: () => void) => void;
 }
 
 export const useFileOperations = ({
@@ -74,7 +74,7 @@ export const useFileOperations = ({
     if (isDirty) {
       if (!window.confirm("You have unsaved changes. Are you sure you want to create a new file?")) return;
     }
-    setBmsData(null);
+    setBmsData(createDefaultBmsData());
     setRawBmsContent(null);
     setFileName("");
     setFileHandle(null);
@@ -479,20 +479,32 @@ export const useFileOperations = ({
     }
   };
 
-  const handleSave = async () => {
+  const handleSave = async (forceSave = false) => {
     setIsFileMenuOpen(false);
-    if (!isDirty || !bmsDataRef.current) return;
+    if (!bmsDataRef.current) return;
 
-    // [저장 무결성 검증 추가]
-    const validationErrors = validateBmsData(bmsDataRef.current, useBase62Ref.current);
-    if (validationErrors.length > 0) {
-      if (onValidationError) {
-        onValidationError(validationErrors);
-      } else {
-        const errorMsgs = validationErrors.map(e => e.message).join('\n');
-        alert(`저장 중 다음과 같은 치명적인 구조적 정합성 오류가 검출되어 저장이 완전히 차단되었습니다:\n\n${errorMsgs}`);
+    if (!forceSave) {
+      // [저장 무결성 검증 추가]
+      const validationErrors = validateBmsData(bmsDataRef.current, useBase62Ref.current);
+      const hasCritical = validationErrors.some(e => e.type !== 'near_overlap');
+      const hasWarning = validationErrors.some(e => e.type === 'near_overlap');
+
+      if (hasCritical || hasWarning) {
+        if (onValidationError) {
+          const onSaveForce = !hasCritical ? () => handleSave(true) : undefined;
+          onValidationError(validationErrors, onSaveForce);
+        } else {
+          if (hasCritical) {
+            const errorMsgs = validationErrors.map(e => e.message).join('\n');
+            alert(`저장 중 다음과 같은 치명적인 구조적 정합성 오류가 검출되어 저장이 완전히 차단되었습니다:\n\n${errorMsgs}`);
+          } else {
+            if (window.confirm("5ms 이내 근접 노트 경고가 존재합니다. 저장을 진행하시겠습니까?")) {
+              handleSave(true);
+            }
+          }
+        }
+        return;
       }
-      return;
     }
 
     if (!fileHandle) {
@@ -539,20 +551,32 @@ export const useFileOperations = ({
     }
   };
 
-  const handleSaveAs = async () => {
+  const handleSaveAs = async (forceSave = false) => {
     setIsFileMenuOpen(false);
     if (!bmsDataRef.current) return;
 
-    // [저장 무결성 검증 추가]
-    const validationErrors = validateBmsData(bmsDataRef.current, useBase62Ref.current);
-    if (validationErrors.length > 0) {
-      if (onValidationError) {
-        onValidationError(validationErrors);
-      } else {
-        const errorMsgs = validationErrors.map(e => e.message).join('\n');
-        alert(`저장 중 다음과 같은 치명적인 구조적 정합성 오류가 검출되어 저장이 완전히 차단되었습니다:\n\n${errorMsgs}`);
+    if (!forceSave) {
+      // [저장 무결성 검증 추가]
+      const validationErrors = validateBmsData(bmsDataRef.current, useBase62Ref.current);
+      const hasCritical = validationErrors.some(e => e.type !== 'near_overlap');
+      const hasWarning = validationErrors.some(e => e.type === 'near_overlap');
+
+      if (hasCritical || hasWarning) {
+        if (onValidationError) {
+          const onSaveForce = !hasCritical ? () => handleSaveAs(true) : undefined;
+          onValidationError(validationErrors, onSaveForce);
+        } else {
+          if (hasCritical) {
+            const errorMsgs = validationErrors.map(e => e.message).join('\n');
+            alert(`저장 중 다음과 같은 치명적인 구조적 정합성 오류가 검출되어 저장이 완전히 차단되었습니다:\n\n${errorMsgs}`);
+          } else {
+            if (window.confirm("5ms 이내 근접 노트 경고가 존재합니다. 저장을 진행하시겠습니까?")) {
+              handleSaveAs(true);
+            }
+          }
+        }
+        return;
       }
-      return;
     }
 
     const isTauri = 

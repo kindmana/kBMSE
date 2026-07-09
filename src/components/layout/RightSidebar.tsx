@@ -27,6 +27,61 @@ const KNOWN_HEADER_KEYS = [
   "stagefile", "banner", "backbmp", "wav00", "bmp00", "preview"
 ];
 
+const shouldHideLine = (line: string): boolean => {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('#')) return false;
+
+  // 1. #WAVxx, #BMPxx, #BPMxx, #STOPxx, #SCROLLxx 정의 형태 (xx는 2자리 숫자/알파벳)
+  const defRegex = /^#(WAV|BMP|BPM|STOP|SCROLL)([0-9A-Z]{2})\s+(.+)$/i;
+  if (defRegex.test(trimmed)) return true;
+
+  // 2. 채널 데이터 (#00111:xx)
+  const channelRegex = /^#([0-9]{3})([0-9A-Z]{2}):(.+)$/i;
+  if (channelRegex.test(trimmed)) return true;
+
+  // 3. 마디 데이터 (#00102 xx)
+  const spaceMeasureRegex = /^#([0-9]{3})02\s+(.+)$/i;
+  if (spaceMeasureRegex.test(trimmed)) return true;
+
+  // 4. KNOWN_HEADER_KEYS 에 정의된 표준 헤더 키들
+  const headerMatch = trimmed.match(/^#([A-Z0-9_-]+)(?:\s+(.+))?$/i);
+  if (headerMatch) {
+    const key = headerMatch[1].toLowerCase();
+    if (KNOWN_HEADER_KEYS.includes(key)) {
+      return true;
+    }
+    // wavxx, bmpxx 형태 등 (예: wav01, bmp01 등)의 헤더 키가 있는 경우도 숨김
+    if (/^(wav|bmp|bpm|stop|scroll)[0-9a-z]{2}$/i.test(key)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const getLineIdentifier = (line: string): string | null => {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('#')) return null;
+
+  // 1. 채널 데이터 (#00111:xx)
+  const channelMatch = trimmed.match(/^#([0-9]{3})([0-9A-Z]{2}):/i);
+  if (channelMatch) return `${channelMatch[1]}${channelMatch[2].toUpperCase()}:`;
+
+  // 2. 마디 데이터 (#00102 xx)
+  const spaceMeasureMatch = trimmed.match(/^#([0-9]{3})02\s+/i);
+  if (spaceMeasureMatch) return `${spaceMeasureMatch[1]}02`;
+
+  // 3. 정의형태 (#WAVxx, #BMPxx, #BPMxx, #STOPxx, #SCROLLxx 등)
+  const defMatch = trimmed.match(/^#(WAV|BMP|BPM|STOP|SCROLL)([0-9A-Z]{2})/i);
+  if (defMatch) return `${defMatch[1].toUpperCase()}${defMatch[2].toUpperCase()}`;
+
+  // 4. 일반 헤더
+  const headerMatch = trimmed.match(/^#([A-Z0-9_-]+)/i);
+  if (headerMatch) return headerMatch[1].toUpperCase();
+
+  return null;
+};
+
 
 export const RightSidebar = ({
   bmsData,
@@ -220,10 +275,9 @@ export const RightSidebar = ({
       const lines = fullText.split(/\r?\n/);
       const visibleLines: string[] = [];
       const hiddenLines: string[] = [];
-      const defRegex = /^#(WAV|BMP)([0-9A-Z]{2})\s+(.+)$/i;
 
       for (const line of lines) {
-        if (defRegex.test(line.trim())) {
+        if (shouldHideLine(line)) {
           hiddenLines.push(line);
         } else {
           visibleLines.push(line);
@@ -240,20 +294,19 @@ export const RightSidebar = ({
   const handleExpansionCodeChange = (text: string) => {
     if (!bmsData) return;
 
-    // Restore hidden BMP/WAV definitions
     const userLines = text.split(/\r?\n/);
     const userDefinedKeys = new Set<string>();
-    const defRegex = /^#(WAV|BMP)([0-9A-Z]{2})/i;
+
     for (const line of userLines) {
-      const match = line.trim().match(defRegex);
-      if (match) {
-        userDefinedKeys.add(match[0].toUpperCase());
+      const ident = getLineIdentifier(line);
+      if (ident) {
+        userDefinedKeys.add(ident);
       }
     }
 
     const hiddenToAppend = hiddenExpansionLines.current.filter(line => {
-      const match = line.trim().match(defRegex);
-      return match ? !userDefinedKeys.has(match[0].toUpperCase()) : true;
+      const ident = getLineIdentifier(line);
+      return ident ? !userDefinedKeys.has(ident) : true;
     });
 
     const combinedText = [...userLines, ...hiddenToAppend].join('\n');
@@ -444,7 +497,7 @@ export const RightSidebar = ({
     }
 
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', height: '250px' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
         <div style={{ display: 'flex', borderBottom: '1px solid var(--border-color)' }}>
           <button 
             style={{ flex: 1, padding: '5px', background: isWav ? 'var(--bg-secondary)' : 'transparent', color: isWav ? 'var(--text-primary)' : 'var(--text-secondary)', border: 'none', cursor: 'pointer', fontSize: '0.85rem' }}
@@ -523,7 +576,7 @@ export const RightSidebar = ({
     }
     return (
       <div 
-        style={{ overflowY: 'auto', flex: 1, height: '200px', userSelect: 'none' }}
+        style={{ overflowY: 'auto', flex: 1, height: '100%', userSelect: 'none' }}
         onScroll={handleMeasureListScroll}
       >
         {items}
@@ -591,11 +644,11 @@ export const RightSidebar = ({
         </div>
       </div>
 
-      {/* Tab Panels (Scrollable area) */}
-      <div style={{ flex: 1, overflowY: 'auto', paddingRight: '2px' }}>
+      {/* Tab Panels */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         {/* 1. Header Info Section */}
         {activeSection === 'header' && (
-          <div>
+          <div style={{ flex: 1, overflowY: 'auto', paddingRight: '2px' }}>
             {bmsData ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <TextInput label={hLabels.title} value={bmsData.header.title} onChange={(val: string) => updateHeader({ title: val })} onBlur={() => commitHistory()} />
@@ -666,7 +719,7 @@ export const RightSidebar = ({
 
         {/* 2. WAV / BMP List Section */}
         {activeSection === 'wavbmp' && (
-          <div>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             {bmsData ? renderWavBmpList() : (
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center', padding: '20px 0' }}>
                 {rTxt.noBms}
@@ -677,7 +730,7 @@ export const RightSidebar = ({
 
         {/* 3. Measure Length List Section */}
         {activeSection === 'measure' && (
-          <div>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             {bmsData ? renderMeasureList() : (
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', textAlign: 'center', padding: '20px 0' }}>
                 {rTxt.noBms}
@@ -688,7 +741,7 @@ export const RightSidebar = ({
 
         {/* 4. Display Section (Grid Snap & Zoom) */}
         {activeSection === 'display' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', paddingRight: '2px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
             {/* Grid Snap Sub-section */}
             <div>
               <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '5px' }}>
@@ -852,9 +905,9 @@ export const RightSidebar = ({
 
         {/* 5. Expansion Code Section */}
         {activeSection === 'expansion' && (
-          <div>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             {bmsData ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px', minHeight: 0 }}>
                 <textarea
                   value={expansionText}
                   onChange={(e) => setExpansionText(e.target.value)}
@@ -866,7 +919,7 @@ export const RightSidebar = ({
                   }}
                   style={{
                     width: '100%',
-                    height: '200px',
+                    flex: 1,
                     background: 'var(--bg-secondary)',
                     border: '1px solid var(--border-color)',
                     color: 'var(--text-primary)',

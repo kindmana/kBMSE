@@ -8,6 +8,7 @@ interface BmsValidationErrorModalProps {
   onClose: () => void;
   errors: BmsValidationError[];
   onGoToMeasure: (measure: number) => void;
+  onSaveForce?: () => void;
 }
 
 const gcd = (a: number, b: number): number => {
@@ -40,7 +41,8 @@ export const BmsValidationErrorModal = ({
   isOpen,
   onClose,
   errors,
-  onGoToMeasure
+  onGoToMeasure,
+  onSaveForce
 }: BmsValidationErrorModalProps) => {
   const [filterType, setFilterType] = useState<string>('all');
 
@@ -50,6 +52,7 @@ export const BmsValidationErrorModal = ({
   const countByType = {
     all: errors.length,
     overlap: errors.filter(e => e.type === 'overlap').length,
+    nearOverlap: errors.filter(e => e.type === 'near_overlap').length,
     ln: errors.filter(e => ['ln_pair', 'ln_overlap', 'ln_length'].includes(e.type)).length,
     lnobj: errors.filter(e => e.type === 'lnobj').length,
     timing: errors.filter(e => ['bpm', 'stop', 'scroll', 'measure', 'header'].includes(e.type)).length
@@ -58,6 +61,7 @@ export const BmsValidationErrorModal = ({
   const getTypeName = (type: string) => {
     switch (type) {
       case 'overlap': return '완전 겹침';
+      case 'near_overlap': return '5ms 근접 경고';
       case 'ln_pair': return '롱노트 페어';
       case 'ln_overlap': return '롱노트 꼬임';
       case 'ln_length': return '롱노트 길이';
@@ -75,6 +79,8 @@ export const BmsValidationErrorModal = ({
     switch (type) {
       case 'overlap':
         return { bg: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', border: 'rgba(239, 68, 68, 0.2)' };
+      case 'near_overlap':
+        return { bg: 'rgba(234, 179, 8, 0.1)', color: '#eab308', border: 'rgba(234, 179, 8, 0.2)' };
       case 'lnobj':
         return { bg: 'rgba(168, 85, 247, 0.1)', color: '#a855f7', border: 'rgba(168, 85, 247, 0.2)' };
       case 'ln_pair':
@@ -90,11 +96,14 @@ export const BmsValidationErrorModal = ({
   const filteredErrors = errors.filter(err => {
     if (filterType === 'all') return true;
     if (filterType === 'overlap') return err.type === 'overlap';
+    if (filterType === 'near_overlap') return err.type === 'near_overlap';
     if (filterType === 'ln') return ['ln_pair', 'ln_overlap', 'ln_length'].includes(err.type);
     if (filterType === 'lnobj') return err.type === 'lnobj';
     if (filterType === 'timing') return ['bpm', 'stop', 'scroll', 'measure', 'header'].includes(err.type);
     return true;
   });
+
+  const hasCriticalError = errors.some(e => e.type !== 'near_overlap');
 
   return createPortal(
     <div
@@ -121,16 +130,18 @@ export const BmsValidationErrorModal = ({
       <div
         className="modal-content glass-effect"
         style={{
-          width: '820px',
+          width: '840px',
           maxHeight: '85vh',
           display: 'flex',
           flexDirection: 'column',
           padding: '0',
-          border: '1px solid rgba(239, 68, 68, 0.25)',
+          border: hasCriticalError ? '1px solid rgba(239, 68, 68, 0.25)' : '1px solid rgba(234, 179, 8, 0.25)',
           borderRadius: '14px',
-          boxShadow: '0 25px 50px rgba(0,0,0,0.6), 0 0 25px rgba(239, 68, 68, 0.1)',
+          boxShadow: hasCriticalError 
+            ? '0 25px 50px rgba(0,0,0,0.6), 0 0 25px rgba(239, 68, 68, 0.1)'
+            : '0 25px 50px rgba(0,0,0,0.6), 0 0 25px rgba(234, 179, 8, 0.1)',
           overflow: 'hidden',
-          background: 'rgba(18, 12, 12, 0.98)',
+          background: hasCriticalError ? 'rgba(18, 12, 12, 0.98)' : 'rgba(18, 16, 12, 0.98)',
           backdropFilter: 'blur(20px)',
           animation: 'modalSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards'
         }}
@@ -142,18 +153,22 @@ export const BmsValidationErrorModal = ({
             justifyContent: 'space-between',
             alignItems: 'center',
             padding: '16px 20px',
-            borderBottom: '1px solid rgba(239, 68, 68, 0.15)',
-            background: 'linear-gradient(90deg, rgba(239, 68, 68, 0.05) 0%, rgba(0,0,0,0) 100%)'
+            borderBottom: hasCriticalError ? '1px solid rgba(239, 68, 68, 0.15)' : '1px solid rgba(234, 179, 8, 0.15)',
+            background: hasCriticalError 
+              ? 'linear-gradient(90deg, rgba(239, 68, 68, 0.05) 0%, rgba(0,0,0,0) 100%)'
+              : 'linear-gradient(90deg, rgba(234, 179, 8, 0.05) 0%, rgba(0,0,0,0) 100%)'
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <ShieldAlert size={20} style={{ color: '#ef4444' }} />
+            <ShieldAlert size={20} style={{ color: hasCriticalError ? '#ef4444' : '#eab308' }} />
             <div>
-              <h3 style={{ margin: '0', fontSize: '1.1rem', fontWeight: 700, color: '#fca5a5' }}>
-                BMS 오류 발견
+              <h3 style={{ margin: '0', fontSize: '1.1rem', fontWeight: 700, color: hasCriticalError ? '#fca5a5' : '#fef08a' }}>
+                {hasCriticalError ? 'BMS 오류 발견' : 'BMS 경고 검출'}
               </h3>
               <p style={{ margin: '2px 0 0 0', fontSize: '0.75rem', color: 'rgba(255,255,255,0.45)' }}>
-                치명적인 패턴 및 제어 채널 손상이 발견되어 파일 저장이 완전히 차단되었습니다.
+                {hasCriticalError 
+                  ? '치명적인 패턴 및 제어 채널 손상이 발견되어 파일 저장이 완전히 차단되었습니다.'
+                  : '노트 간격이 5ms 이하로 배치된 경고가 존재합니다. 저장을 원하시면 [저장 진행]을 클릭하십시오.'}
               </p>
             </div>
           </div>
@@ -182,20 +197,20 @@ export const BmsValidationErrorModal = ({
         <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px', flex: 1, overflow: 'hidden' }}>
           
           {/* Summary Dashboard Grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '10px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '10px' }}>
             {/* All */}
             <div
               onClick={() => setFilterType('all')}
               style={{
-                background: filterType === 'all' ? 'rgba(239, 68, 68, 0.08)' : 'rgba(255,255,255,0.02)',
-                border: filterType === 'all' ? '1px solid #ef4444' : '1px solid rgba(255,255,255,0.05)',
+                background: filterType === 'all' ? (hasCriticalError ? 'rgba(239, 68, 68, 0.08)' : 'rgba(234, 179, 8, 0.08)') : 'rgba(255,255,255,0.02)',
+                border: filterType === 'all' ? (hasCriticalError ? '1px solid #ef4444' : '1px solid #eab308') : '1px solid rgba(255,255,255,0.05)',
                 borderRadius: '8px', padding: '10px', textAlign: 'center', cursor: 'pointer', transition: 'all 0.15s ease'
               }}
             >
               <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', marginBottom: '4px' }}>
-                <Layers size={11} /> 전체 오류
+                <Layers size={11} /> 전체
               </div>
-              <div style={{ fontSize: '1.2rem', fontWeight: 800, color: '#fca5a5' }}>{countByType.all}</div>
+              <div style={{ fontSize: '1.2rem', fontWeight: 800, color: hasCriticalError ? '#fca5a5' : '#fef08a' }}>{countByType.all}</div>
             </div>
 
             {/* Overlaps */}
@@ -208,9 +223,24 @@ export const BmsValidationErrorModal = ({
               }}
             >
               <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', marginBottom: '4px' }}>
-                <Zap size={11} style={{ color: '#ef4444' }} /> 완전 겹침
+                <Layers size={11} style={{ color: '#ef4444' }} /> 완전 겹침
               </div>
               <div style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ef4444' }}>{countByType.overlap}</div>
+            </div>
+
+            {/* Near Overlaps */}
+            <div
+              onClick={() => setFilterType('near_overlap')}
+              style={{
+                background: filterType === 'near_overlap' ? 'rgba(234, 179, 8, 0.08)' : 'rgba(255,255,255,0.02)',
+                border: filterType === 'near_overlap' ? '1px solid #eab308' : '1px solid rgba(255,255,255,0.05)',
+                borderRadius: '8px', padding: '10px', textAlign: 'center', cursor: 'pointer', transition: 'all 0.15s ease'
+              }}
+            >
+              <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', marginBottom: '4px' }}>
+                <Zap size={11} style={{ color: '#eab308' }} /> 5ms 근접
+              </div>
+              <div style={{ fontSize: '1.2rem', fontWeight: 800, color: '#eab308' }}>{countByType.nearOverlap}</div>
             </div>
 
             {/* Long Notes */}
@@ -223,7 +253,7 @@ export const BmsValidationErrorModal = ({
               }}
             >
               <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', marginBottom: '4px' }}>
-                <Hourglass size={11} style={{ color: '#eab308' }} /> 롱노트 페어/구간
+                <Hourglass size={11} style={{ color: '#eab308' }} /> 롱노트 페어
               </div>
               <div style={{ fontSize: '1.2rem', fontWeight: 800, color: '#eab308' }}>{countByType.ln}</div>
             </div>
@@ -238,7 +268,7 @@ export const BmsValidationErrorModal = ({
               }}
             >
               <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', marginBottom: '4px' }}>
-                <HelpCircle size={11} style={{ color: '#a855f7' }} /> LNOBJ 논리
+                <HelpCircle size={11} style={{ color: '#a855f7' }} /> LNOBJ
               </div>
               <div style={{ fontSize: '1.2rem', fontWeight: 800, color: '#a855f7' }}>{countByType.lnobj}</div>
             </div>
@@ -253,7 +283,7 @@ export const BmsValidationErrorModal = ({
               }}
             >
               <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', marginBottom: '4px' }}>
-                <Layers size={11} style={{ color: '#3b82f6' }} /> 제어/설정/BPM
+                <Layers size={11} style={{ color: '#3b82f6' }} /> 제어/설정
               </div>
               <div style={{ fontSize: '1.2rem', fontWeight: 800, color: '#3b82f6' }}>{countByType.timing}</div>
             </div>
@@ -379,27 +409,52 @@ export const BmsValidationErrorModal = ({
             background: 'rgba(0,0,0,0.3)',
             display: 'flex',
             justifyContent: 'flex-end',
-            alignItems: 'center'
+            alignItems: 'center',
+            gap: '10px'
           }}
         >
+          {!hasCriticalError && onSaveForce && (
+            <button
+              onClick={() => {
+                onSaveForce();
+                onClose();
+              }}
+              style={{
+                background: 'var(--accent-color, #6366f1)',
+                color: '#ffffff',
+                border: 'none',
+                padding: '6px 16px',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                boxShadow: '0 4px 12px rgba(99, 102, 241, 0.25)',
+                transition: 'background 0.2s'
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--accent-hover, #4f46e5)')}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'var(--accent-color, #6366f1)')}
+            >
+              저장 진행
+            </button>
+          )}
           <button
             onClick={onClose}
             style={{
-              background: '#ef4444',
+              background: hasCriticalError ? '#ef4444' : 'rgba(255, 255, 255, 0.08)',
               color: '#ffffff',
-              border: 'none',
+              border: hasCriticalError ? 'none' : '1px solid rgba(255, 255, 255, 0.15)',
               padding: '6px 16px',
               borderRadius: '6px',
               cursor: 'pointer',
               fontSize: '0.8rem',
               fontWeight: 600,
-              boxShadow: '0 4px 12px rgba(239,68,68,0.25)',
+              boxShadow: hasCriticalError ? '0 4px 12px rgba(239,68,68,0.25)' : 'none',
               transition: 'background 0.2s'
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#dc2626')}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = '#ef4444')}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = hasCriticalError ? '#dc2626' : 'rgba(255, 255, 255, 0.15)')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = hasCriticalError ? '#ef4444' : 'rgba(255, 255, 255, 0.08)')}
           >
-            닫기
+            {hasCriticalError ? '닫기' : '취소'}
           </button>
         </div>
       </div>

@@ -489,7 +489,7 @@ export function useKeyboardShortcuts(
     if (hoverBmsPos.current) {
       targetMeasure = hoverBmsPos.current.measure;
     } else {
-      const midY = scrollY.current + (canvasRef.current?.height || 600) / 2;
+      const midY = scrollY.current + (canvasRef.current?.clientHeight || 600) / 2;
       let bestM = 0;
       let bestDiff = Infinity;
       measureOffsetsRef.current.offsets.forEach((y, m) => {
